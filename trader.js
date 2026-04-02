@@ -34,7 +34,7 @@ function log(msg, type = 'scan') {
 }
 
 // ── Market hours (ET) ─────────────────────────────────────────────────────────
-function isDST() {
+function getETTime () {
   const d = new Date();
   const jan = new Date(d.getFullYear(), 0, 1).getTimezoneOffset();
   const jul = new Date(d.getFullYear(), 6, 1).getTimezoneOffset();
@@ -43,7 +43,7 @@ function isDST() {
 
 function getETTime() {
   const now = new Date();
-  const offset = isDST() ? -4 : -5;
+  const offset = getETTime () ? -4 : -5;
   return new Date(now.getTime() + (now.getTimezoneOffset() + offset * 60) * 60000);
 }
 
