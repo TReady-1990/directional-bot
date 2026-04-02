@@ -34,11 +34,14 @@ function log(msg, type = 'scan') {
 }
 
 // ── Market hours (ET) ─────────────────────────────────────────────────────────
-function getETTime () {
-  const d = new Date();
-  const jan = new Date(d.getFullYear(), 0, 1).getTimezoneOffset();
-  const jul = new Date(d.getFullYear(), 6, 1).getTimezoneOffset();
-  return d.getTimezoneOffset() < Math.max(jan, jul);
+function getETTime() {
+  const now = new Date();
+  const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+  // EDT (UTC-4): March-November, EST (UTC-5): November-March
+  const month = now.getUTCMonth(); // 0=Jan, 11=Dec
+  const isDST = month >= 2 && month <= 10;
+  return new Date(utcMs + ((isDST ? -4 : -5) * 3600000));
+}
 }
 
 function getETTime() {
