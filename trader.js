@@ -42,7 +42,6 @@ function getETTime() {
   const isDST = month >= 2 && month <= 10;
   return new Date(utcMs + ((isDST ? -4 : -5) * 3600000));
 }
-}
 
 function isMarketOpen() {
   const et  = getETTime();
