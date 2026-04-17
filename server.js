@@ -123,6 +123,60 @@ app.post('/api/learning/run', (req, res) => {
 // Signals
 app.get('/api/signals', (req, res) => res.json(trader.signals));
 
+// ML service proxy endpoints
+app.get('/api/ml/status', async (req, res) => {
+  const url = process.env.ML_SERVICE_URL;
+  if (!url) return res.json({ enabled: false, message: 'ML_SERVICE_URL not set' });
+  try {
+    const r = await require('node-fetch')(`${url}/health`);
+    const d = await r.json();
+    res.json({ enabled: true, ...d });
+  } catch(e) {
+    res.json({ enabled: false, error: e.message });
+  }
+});
+
+app.post('/api/ml/train', async (req, res) => {
+  const url = process.env.ML_SERVICE_URL;
+  if (!url) return res.status(400).json({ error: 'ML_SERVICE_URL not set' });
+  try {
+    const r = await require('node-fetch')(`${url}/train`, { method: 'POST' });
+    const d = await r.json();
+    res.json(d);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/ml/train/memory', async (req, res) => {
+  const url = process.env.ML_SERVICE_URL;
+  if (!url) return res.status(400).json({ error: 'ML_SERVICE_URL not set' });
+  try {
+    const tradeMemory = req.body.trade_memory || store.get().tradeMemory;
+    const r = await require('node-fetch')(`${url}/train/memory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trade_memory: tradeMemory }),
+    });
+    const d = await r.json();
+    res.json(d);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/ml/summary', async (req, res) => {
+  const url = process.env.ML_SERVICE_URL;
+  if (!url) return res.json({ enabled: false });
+  try {
+    const r = await require('node-fetch')(`${url}/summary`);
+    const d = await r.json();
+    res.json({ enabled: true, ...d });
+  } catch(e) {
+    res.json({ enabled: false, error: e.message });
+  }
+});
+
 // Health check (Railway uses this)
 app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime(), time: new Date().toISOString() }));
 

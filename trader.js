@@ -99,7 +99,7 @@ async function fetchPrices() {
 // ── Signal generation ─────────────────────────────────────────────────────────
 let signals = {};
 
-function generateSignals() {
+async function generateSignals() {
   const { watchlist, settings, learnedThresholds: lt } = store.get();
   const s = settings;
 
@@ -124,22 +124,17 @@ function generateSignals() {
     const bearScore = ['momentum','rsi'].filter(k => conditions[k].met && conditions[k].bearish).length;
     const minCond   = lt.minCond || s.minCond;
 
-    let direction = 'none';
-    if (metCount >= minCond) {
-      if (bullScore > bearScore)      direction = 'call';
-      else if (bearScore > bullScore) direction = 'put';
-      else if (bullScore > 0)         direction = q.chgPct > 0 ? 'call' : 'put';
-    }
-
-    // ticker bias from learning engine
-    const bias = getTickerBias(sym);
-    if (bias < -0.3 && direction !== 'none') {
-      log(`Signal suppressed for ${sym} — negative bias (${(bias*100).toFixed(0)}%)`, 'scan');
-      direction = 'none';
-    }
-
-    signals[sym] = { sym, price: q.price, chgPct: q.chgPct, chg: q.chg, rsi, ivRank, volSpike, conditions, metCount, direction };
+    // direction determined async by scoringEngine — set placeholder now
+    signals[sym] = { sym, price: q.price, chgPct: q.chgPct, chg: q.chg, rsi, ivRank, volSpike, conditions, metCount, direction: 'pending' };
   });
+
+  // resolve ML/rule scoring async for each ticker
+  await Promise.all(watchlist.map(async sym => {
+    const sig = signals[sym];
+    if (!sig) return;
+    const scored = await scoringEngine(sym, sig.conditions, sig.metCount, sig);
+    signals[sym] = { ...sig, direction: scored.direction, confidence: scored.confidence, mlProbability: scored.mlProbability };
+  }));
 
   broadcast('signals', signals);
 }
@@ -154,6 +149,111 @@ function getTickerBias(sym) {
   const trades = tradeMemory.filter(t => t.sym === sym);
   if (trades.length < 3) return 0;
   return trades.filter(t => t.win).length / trades.length - 0.5;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ████  SCORING ENGINE — RF + Gradient Boosting ML ensemble  ██████████████
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// When ML_SERVICE_URL env var is set, this calls the Python ML service
+// and uses the ensemble prediction. Falls back to rule-based scoring if
+// the ML service is unavailable or not yet trained.
+//
+// To upgrade: set ML_SERVICE_URL in Railway environment variables to the
+// URL of your deployed ml-service (e.g. https://ml-service.up.railway.app)
+
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || null;
+let mlServiceAvailable = false;
+let mlLastCheck = 0;
+
+async function checkMLService() {
+  if (!ML_SERVICE_URL) return false;
+  // re-check every 5 minutes
+  if (Date.now() - mlLastCheck < 5 * 60 * 1000) return mlServiceAvailable;
+  try {
+    const res  = await fetch(`${ML_SERVICE_URL}/health`, { timeout: 3000 });
+    const data = await res.json();
+    mlServiceAvailable = data.ok && data.model_ready;
+    mlLastCheck = Date.now();
+    if (mlServiceAvailable) log(`ML service connected — ${data.n_trades} trades, GB accuracy ${(data.gb_accuracy*100).toFixed(1)}%`, 'order');
+    return mlServiceAvailable;
+  } catch(e) {
+    mlServiceAvailable = false;
+    mlLastCheck = Date.now();
+    return false;
+  }
+}
+
+async function scoringEngine(sym, conditions, metCount, signalData) {
+  const et       = getETTime();
+  const buyHour  = et.getHours();
+  const buyDow   = et.getDay();
+  const bias     = getTickerBias(sym);
+
+  // ── Try ML service first ─────────────────────────────────────────────────
+  const mlReady = await checkMLService();
+  if (mlReady && ML_SERVICE_URL) {
+    try {
+      const payload = {
+        sym,
+        direction:       signalData.direction !== 'none' ? signalData.direction : 'call',
+        buy_hour:        buyHour,
+        buy_dow:         buyDow,
+        rsi_val:         signalData.rsi       || 50,
+        iv_rank:         signalData.ivRank    || 30,
+        vol_spike:       signalData.volSpike  || 1.5,
+        chg_pct:         signalData.chgPct    || 0,
+        met_count:       metCount,
+        cond_momentum:   conditions.momentum?.met ? 1 : 0,
+        cond_rsi:        conditions.rsi?.met      ? 1 : 0,
+        cond_iv:         conditions.iv?.met        ? 1 : 0,
+        cond_volume:     conditions.volume?.met    ? 1 : 0,
+        ticker_win_rate: bias + 0.5,  // convert bias (-0.5 to 0.5) to win rate (0 to 1)
+      };
+      const res  = await fetch(`${ML_SERVICE_URL}/predict`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+      const pred = await res.json();
+
+      if (pred.suppress) {
+        log(`ML suppressed ${sym} — win probability ${(pred.win_probability*100).toFixed(1)}% (confidence: ${pred.confidence})`, 'scan');
+        return { direction: 'none', confidence: pred.confidence, mlProbability: pred.win_probability };
+      }
+
+      log(`ML signal: ${sym} ${pred.direction.toUpperCase()} — ${(pred.win_probability*100).toFixed(1)}% win prob (${pred.confidence} confidence)`, 'scan');
+      return {
+        direction:     pred.direction,
+        confidence:    pred.confidence,
+        mlProbability: pred.win_probability,
+        model:         pred.model,
+      };
+    } catch(e) {
+      log(`ML service error for ${sym}: ${e.message} — falling back to rules`, 'scan');
+    }
+  }
+
+  // ── Rule-based fallback ──────────────────────────────────────────────────
+  const { learnedThresholds: lt, settings: s } = store.get();
+  const minCond   = lt.minCond || s.minCond || 3;
+  const bullScore = ['momentum','rsi'].filter(k => conditions[k]?.met && conditions[k]?.bullish).length;
+  const bearScore = ['momentum','rsi'].filter(k => conditions[k]?.met && conditions[k]?.bearish).length;
+
+  let direction = 'none';
+  if (metCount >= minCond) {
+    if (bullScore > bearScore)      direction = 'call';
+    else if (bearScore > bullScore) direction = 'put';
+    else if (bullScore > 0)         direction = signalData.chgPct > 0 ? 'call' : 'put';
+  }
+
+  // apply ticker bias suppression
+  if (bias < -0.3 && direction !== 'none') {
+    log(`Signal suppressed for ${sym} — negative ticker bias (${(bias*100).toFixed(0)}%)`, 'scan');
+    direction = 'none';
+  }
+
+  return { direction, confidence: 'rules', mlProbability: null };
 }
 
 // ── Options chain ─────────────────────────────────────────────────────────────
@@ -816,7 +916,9 @@ function getStatus() {
       maxDailyLoss:    s.maxDailyLoss    || 5,
       maxExposure:     s.maxExposure     || 30,
     },
-    account: liveAccountCache,
+    account:      liveAccountCache,
+    mlEnabled:    mlServiceAvailable,
+    mlServiceUrl: ML_SERVICE_URL || null,
   };
 }
 
@@ -836,4 +938,5 @@ module.exports = {
   init, start, stop, getStatus, emitter, buildMetrics,
   enterTrade, exitTrade, syncAccount, runScan, runLearningCycle,
   signals, priceCache, cooldownMap, liveAccountCache,
+  checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };
