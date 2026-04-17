@@ -801,6 +801,8 @@ async function runScan() {
 const DEFAULT_THRESHOLDS = { momentum: 0.5, rsiLow: 35, rsiHigh: 65, ivMax: 35, volMult: 1.5, minCond: 3 };
 const THRESHOLD_BOUNDS   = { momentum:{min:0.1,max:3.0}, rsiLow:{min:20,max:45}, rsiHigh:{min:55,max:80}, ivMax:{min:10,max:55}, volMult:{min:1.0,max:4.0}, minCond:{min:2,max:4} };
 
+const ML_RETRAIN_EVERY = 25; // retrain ML model every N closed trades
+
 function recordTradeForLearning(trade) {
   if (!trade.entrySnapshot) return;
   store.update('tradeMemory', arr => [{
@@ -811,7 +813,21 @@ function recordTradeForLearning(trade) {
   }, ...arr.slice(0, 199)]);
 
   const { tradeMemory } = store.get();
+
+  // rule-based learning cycle every 5 trades
   if (tradeMemory.length % 5 === 0) runLearningCycle();
+
+  // ML retrain every 25 trades (non-blocking background call)
+  if (ML_SERVICE_URL && tradeMemory.length % ML_RETRAIN_EVERY === 0) {
+    log(`Auto-retraining ML model after ${tradeMemory.length} server-side trades...`, 'order');
+    fetch(`${ML_SERVICE_URL}/train`, { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        log(`ML retrain triggered — ${d.message || 'started'}`, 'order');
+        setTimeout(() => { mlLastCheck = 0; checkMLService(); }, 60000);
+      })
+      .catch(e => log(`ML retrain error: ${e.message}`, 'err'));
+  }
 }
 
 function runLearningCycle() {
