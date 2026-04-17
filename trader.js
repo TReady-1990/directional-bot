@@ -107,7 +107,7 @@ async function generateSignals() {
     const q = priceCache[sym];
     if (!q || !q.price) { signals[sym] = null; return; }
 
-    const rsi       = simulateRSI(sym, q);
+    const rsi       = rsiCache[sym]?.rsi ?? simulateRSIFallback(sym);
     const baseIv    = { SPY:16, QQQ:18 }[sym] || 30;
     const ivRank    = Math.min(99, Math.max(5, baseIv + (Math.random() * 18 - 9)));
     const volSpike  = q.volume / (q.avgVol || 1);
@@ -139,9 +139,83 @@ async function generateSignals() {
   broadcast('signals', signals);
 }
 
-function simulateRSI(sym, q) {
-  const base = 50, momentumBias = q.chgPct * 3, noise = (Math.random() * 16) - 8;
-  return Math.min(95, Math.max(5, base + momentumBias + noise));
+// ── Real RSI calculation using Tradier historical data ───────────────────────
+// Cache: { SYM: { rsi, fetchedAt } }
+// Refreshed once per day per ticker (RSI is a daily indicator)
+const rsiCache = {};
+const RSI_PERIOD  = 14;
+const RSI_HISTORY = 28; // fetch 28 days to ensure 14 full periods
+
+async function fetchRealRSI(sym) {
+  const cached = rsiCache[sym];
+  const now    = Date.now();
+  // cache for 1 hour — RSI doesn't need to refresh every scan
+  if (cached && now - cached.fetchedAt < 60 * 60 * 1000) return cached.rsi;
+
+  try {
+    const end   = new Date();
+    const start = new Date(end - RSI_HISTORY * 24 * 60 * 60 * 1000);
+    const fmt   = d => d.toISOString().split('T')[0];
+    const res   = await fetch(
+      `${PROD_BASE}/markets/history?symbol=${sym}&interval=daily&start=${fmt(start)}&end=${fmt(end)}`,
+      { headers: prodHeaders() }
+    );
+    const data  = await res.json();
+    const days  = data?.history?.day;
+    if (!days || days.length < RSI_PERIOD + 1) {
+      // not enough data — fall back to simulated
+      return simulateRSIFallback(sym);
+    }
+
+    const closes = (Array.isArray(days) ? days : [days])
+      .map(d => parseFloat(d.close))
+      .filter(v => !isNaN(v));
+
+    if (closes.length < RSI_PERIOD + 1) return simulateRSIFallback(sym);
+
+    // Wilder's smoothed RSI
+    const changes = closes.slice(1).map((c, i) => c - closes[i]);
+    let avgGain = changes.slice(0, RSI_PERIOD).filter(c => c > 0).reduce((s, v) => s + v, 0) / RSI_PERIOD;
+    let avgLoss = changes.slice(0, RSI_PERIOD).filter(c => c < 0).reduce((s, v) => s + Math.abs(v), 0) / RSI_PERIOD;
+
+    for (let i = RSI_PERIOD; i < changes.length; i++) {
+      const gain = changes[i] > 0 ? changes[i] : 0;
+      const loss = changes[i] < 0 ? Math.abs(changes[i]) : 0;
+      avgGain = (avgGain * (RSI_PERIOD - 1) + gain) / RSI_PERIOD;
+      avgLoss = (avgLoss * (RSI_PERIOD - 1) + loss) / RSI_PERIOD;
+    }
+
+    const rs  = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    const rsi = Math.round(100 - (100 / (1 + rs)));
+    rsiCache[sym] = { rsi, fetchedAt: now };
+    return rsi;
+  } catch(e) {
+    return simulateRSIFallback(sym);
+  }
+}
+
+// Fallback only used when Tradier history is unavailable
+function simulateRSIFallback(sym) {
+  const q = priceCache[sym];
+  if (!q) return 50;
+  const base = 50, momentumBias = q.chgPct * 3, noise = (Math.random() * 8) - 4;
+  return Math.min(95, Math.max(5, Math.round(base + momentumBias + noise)));
+}
+
+// Prefetch RSI for all watchlist tickers in parallel (called once per scan)
+async function prefetchRSI(watchlist) {
+  // only fetch tickers whose cache is stale
+  const stale = watchlist.filter(sym => {
+    const c = rsiCache[sym];
+    return !c || Date.now() - c.fetchedAt > 60 * 60 * 1000;
+  });
+  if (!stale.length) return;
+  // batch in groups of 5 to avoid rate limiting
+  for (let i = 0; i < stale.length; i += 5) {
+    const batch = stale.slice(i, i + 5);
+    await Promise.all(batch.map(sym => fetchRealRSI(sym)));
+    if (i + 5 < stale.length) await new Promise(r => setTimeout(r, 300));
+  }
 }
 
 function getTickerBias(sym) {
@@ -778,6 +852,7 @@ async function runScan() {
       log(`${openPositions.length}/${maxPos} max positions — skipping entry scan`, 'scan'); return;
     }
     await fetchPrices();
+    await prefetchRSI(store.get().watchlist); // fetch real RSI for all tickers
     generateSignals();
 
     for (const sym of store.get().watchlist) {
@@ -941,7 +1016,10 @@ function getStatus() {
 // resume auto if it was running before restart
 function init() {
   store.load();
-  fetchPrices().then(() => generateSignals());
+  fetchPrices().then(async () => {
+    await prefetchRSI(store.get().watchlist);
+    generateSignals();
+  });
   syncAccount();
   if (store.get().autoEnabled) {
     log('Resuming bot after restart...', 'order');
