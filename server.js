@@ -193,14 +193,15 @@ server.listen(PORT, () => {
 
 // ── Migration endpoint (one-time import from localStorage) ─────────────────
 app.post('/api/migrate', (req, res) => {
-  const { tradeMemory, learnedThresholds, adaptationCount, closedPositions, pnlHistory, watchlist } = req.body;
+  const { tradeMemory, learnedThresholds, adaptationCount, closedPositions, pnlHistory, watchlist, autoCount } = req.body;
   if (tradeMemory)       store.set('tradeMemory',       tradeMemory);
   if (learnedThresholds) store.set('learnedThresholds', learnedThresholds);
   if (adaptationCount)   store.set('adaptationCount',   adaptationCount);
   if (closedPositions)   store.set('closedPositions',   closedPositions);
   if (pnlHistory)        store.set('pnlHistory',        pnlHistory);
   if (watchlist)         store.set('watchlist',         watchlist);
+  if (autoCount != null) store.set('autoCount',         autoCount);
   broadcast({ type:'snapshot', data:{ ...store.get(), status:trader.getStatus(), metrics:trader.buildMetrics() } });
-  console.log(`[migrate] Imported: ${tradeMemory?.length||0} trades, ${closedPositions?.length||0} closed positions`);
-  res.json({ ok:true, imported:{ trades:tradeMemory?.length||0, closed:closedPositions?.length||0 } });
+  console.log(`[migrate] Imported: ${tradeMemory?.length||0} trades, ${closedPositions?.length||0} closed, autoCount: ${autoCount||'unchanged'}`);
+  res.json({ ok:true, imported:{ trades:tradeMemory?.length||0, closed:closedPositions?.length||0, autoCount: store.get().autoCount } });
 });
