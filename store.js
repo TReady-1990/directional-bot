@@ -6,7 +6,10 @@
 const fs   = require('fs');
 const path = require('path');
 
-const DATA_DIR  = path.join(__dirname, 'data');
+// Use Railway persistent volume if available (/data), otherwise local ./data
+const DATA_DIR  = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? process.env.RAILWAY_VOLUME_MOUNT_PATH
+  : path.join(__dirname, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 const DEFAULT_STATE = {
