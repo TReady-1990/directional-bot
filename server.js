@@ -4,6 +4,7 @@
 
 'use strict';
 const express   = require('express');
+const backtest  = require('./backtest');
 const http      = require('http');
 const WebSocket = require('ws');
 const path      = require('path');
@@ -176,6 +177,52 @@ app.get('/api/ml/summary', async (req, res) => {
     res.json({ enabled: false, error: e.message });
   }
 });
+
+// ── Backtest endpoints ───────────────────────────────────────────────────────
+let backtestRunning = false;
+let backtestProgress = { running: false, done: 0, total: 0, phase: '' };
+
+app.post('/api/backtest/run', async (req, res) => {
+  if (backtestRunning) return res.json({ error: 'Backtest already running' });
+  const { params, tickers, startDate, endDate } = req.body;
+  const syms = tickers || store.get().watchlist.slice(0, 20); // limit to 20 tickers
+  backtestRunning = true;
+  backtestProgress = { running: true, done: 0, total: syms.length, phase: 'fetching data' };
+  try {
+    const result = await backtest.runBacktest(syms, params, startDate, endDate, (done, total, sym) => {
+      backtestProgress = { running: true, done, total, phase: `scanning ${sym}` };
+    });
+    backtestProgress = { running: false, done: syms.length, total: syms.length, phase: 'complete' };
+    res.json({ ok: true, result });
+  } catch(e) {
+    backtestProgress = { running: false, phase: 'error' };
+    res.status(500).json({ error: e.message });
+  } finally {
+    backtestRunning = false;
+  }
+});
+
+app.post('/api/backtest/optimize', async (req, res) => {
+  if (backtestRunning) return res.json({ error: 'Backtest already running' });
+  const { tickers, startDate, endDate } = req.body;
+  const syms = tickers || store.get().watchlist.slice(0, 15); // limit for optimizer
+  backtestRunning = true;
+  backtestProgress = { running: true, done: 0, total: 80, phase: 'optimizing parameters' };
+  try {
+    const result = await backtest.optimizeParams(syms, startDate, endDate, (done, total) => {
+      backtestProgress = { running: true, done, total, phase: `testing combination ${done}/${total}` };
+    });
+    backtestProgress = { running: false, done: 80, total: 80, phase: 'complete' };
+    res.json({ ok: true, result });
+  } catch(e) {
+    backtestProgress = { running: false, phase: 'error' };
+    res.status(500).json({ error: e.message });
+  } finally {
+    backtestRunning = false;
+  }
+});
+
+app.get('/api/backtest/progress', (req, res) => res.json(backtestProgress));
 
 // Health check (Railway uses this)
 app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime(), time: new Date().toISOString() }));

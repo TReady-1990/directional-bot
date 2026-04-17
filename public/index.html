@@ -386,12 +386,103 @@
   </div>
 </div>
 
+<!-- BACKTEST PAGE -->
+<div class="page" id="page-backtest">
+  <div class="card">
+    <div class="card-title">BACKTEST & OPTIMIZER</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.6;">
+      Tests your strategy against 1 year of historical data using Black-Scholes option pricing.
+      Optimizer finds the best parameter combination ranked by Sharpe ratio.
+    </div>
+
+    <!-- Date range -->
+    <div class="setting-group">
+      <div class="setting-label">DATE RANGE</div>
+      <div class="setting-row">
+        <input type="date" id="bt-start" style="font-family:var(--font);font-size:12px;padding:6px 8px;border-radius:8px;border:0.5px solid var(--border);background:var(--card2);color:var(--text);flex:1;">
+        <span style="color:var(--muted);font-size:11px;padding:0 6px;">to</span>
+        <input type="date" id="bt-end" style="font-family:var(--font);font-size:12px;padding:6px 8px;border-radius:8px;border:0.5px solid var(--border);background:var(--card2);color:var(--text);flex:1;">
+      </div>
+    </div>
+
+    <!-- Tickers -->
+    <div class="setting-group">
+      <div class="setting-label">TICKERS TO TEST</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Comma separated — fewer tickers = faster results</div>
+      <input type="text" id="bt-tickers" placeholder="TSLA,NVDA,AAPL,META,QQQ" style="width:100%;font-family:var(--font);font-size:12px;padding:8px;border-radius:8px;border:0.5px solid var(--border);background:var(--card2);color:var(--text);">
+    </div>
+
+    <!-- Action buttons -->
+    <div style="display:flex;gap:8px;margin-top:4px;">
+      <button class="btn btn-full btn-primary" onclick="runOptimizer()" id="bt-optimize-btn">🔍 Optimize Parameters</button>
+      <button class="btn btn-full" onclick="runBacktestCurrent()" id="bt-run-btn">▶ Test Current Settings</button>
+    </div>
+  </div>
+
+  <!-- Progress bar -->
+  <div class="card" id="bt-progress-card" style="display:none;">
+    <div class="card-title">RUNNING...</div>
+    <div id="bt-progress-label" style="font-size:11px;color:var(--muted);margin-bottom:8px;">Fetching historical data...</div>
+    <div style="background:var(--card2);border-radius:8px;height:8px;overflow:hidden;">
+      <div id="bt-progress-bar" style="height:100%;background:var(--blue);border-radius:8px;width:0%;transition:width 0.3s;"></div>
+    </div>
+    <div id="bt-progress-pct" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:right;">0%</div>
+  </div>
+
+  <!-- Optimizer top results -->
+  <div id="bt-optimizer-results" style="display:none;">
+    <div class="card">
+      <div class="card-title">TOP 5 PARAMETER COMBINATIONS</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Ranked by Sharpe ratio — best risk-adjusted return</div>
+      <div id="bt-top-params"></div>
+      <button class="btn btn-full btn-primary" onclick="applyBestParams()" id="bt-apply-btn" style="margin-top:12px;">✓ Apply Best Parameters</button>
+    </div>
+  </div>
+
+  <!-- Metrics summary -->
+  <div id="bt-metrics-card" style="display:none;">
+    <div class="card">
+      <div class="card-title">BACKTEST RESULTS</div>
+      <div class="learning-stats" style="margin-bottom:14px;">
+        <div class="learn-stat"><div class="learn-stat-label">TRADES</div><div class="learn-stat-val" id="bt-m-trades">—</div></div>
+        <div class="learn-stat"><div class="learn-stat-label">WIN RATE</div><div class="learn-stat-val" id="bt-m-wr">—</div></div>
+        <div class="learn-stat"><div class="learn-stat-label">TOTAL P&L</div><div class="learn-stat-val" id="bt-m-pnl">—</div></div>
+      </div>
+      <div class="learning-stats">
+        <div class="learn-stat"><div class="learn-stat-label">SHARPE</div><div class="learn-stat-val" id="bt-m-sharpe">—</div></div>
+        <div class="learn-stat"><div class="learn-stat-label">MAX DD</div><div class="learn-stat-val" id="bt-m-dd">—</div></div>
+        <div class="learn-stat"><div class="learn-stat-label">PROF FACTOR</div><div class="learn-stat-val" id="bt-m-pf">—</div></div>
+      </div>
+    </div>
+
+    <!-- P&L curve -->
+    <div class="card">
+      <div class="card-title">P&L CURVE</div>
+      <canvas id="bt-pnl-chart" height="180"></canvas>
+    </div>
+
+    <!-- Monthly breakdown -->
+    <div class="card">
+      <div class="card-title">MONTHLY BREAKDOWN</div>
+      <div id="bt-monthly"></div>
+    </div>
+
+    <!-- Trade table -->
+    <div class="card">
+      <div class="card-title">TRADE LOG</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;" id="bt-trade-count"></div>
+      <div id="bt-trades" style="max-height:400px;overflow-y:auto;"></div>
+    </div>
+  </div>
+</div>
+
 <!-- BOTTOM NAV -->
 <nav class="nav">
   <button class="nav-btn active" onclick="showPage('dashboard',this)"><span class="nav-icon">◈</span>Dashboard</button>
   <button class="nav-btn" onclick="showPage('signals',this)"><span class="nav-icon">⚡</span>Signals</button>
   <button class="nav-btn" onclick="showPage('positions',this)"><span class="nav-icon">◎</span>Positions</button>
   <button class="nav-btn" onclick="showPage('settings',this)"><span class="nav-icon">⚙</span>Settings</button>
+  <button class="nav-btn" onclick="showPage('backtest',this)"><span class="nav-icon">📈</span>Backtest</button>
 </nav>
 
 <script>
@@ -911,12 +1002,220 @@ async function runLearning() {
   renderLearning();
 }
 
+// ── Backtest ─────────────────────────────────────────────────────────────────
+let btChart = null;
+let bestParamsCache = null;
+
+function initBacktestDates() {
+  const end   = new Date();
+  const start = new Date(end);
+  start.setFullYear(start.getFullYear() - 1);
+  document.getElementById('bt-end').value   = end.toISOString().split('T')[0];
+  document.getElementById('bt-start').value = start.toISOString().split('T')[0];
+  // default tickers — top movers from watchlist
+  document.getElementById('bt-tickers').value = 'TSLA,NVDA,AAPL,META,QQQ,SPY,AMD,MSFT';
+}
+
+function getBacktestTickers() {
+  const raw = document.getElementById('bt-tickers').value;
+  return raw.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+}
+
+let btProgressInterval = null;
+
+function startProgressPoll() {
+  document.getElementById('bt-progress-card').style.display = 'block';
+  document.getElementById('bt-metrics-card').style.display  = 'none';
+  document.getElementById('bt-optimizer-results').style.display = 'none';
+  btProgressInterval = setInterval(async () => {
+    const p = await fetch('/api/backtest/progress').then(r=>r.json());
+    const pct = p.total > 0 ? Math.round(p.done / p.total * 100) : 0;
+    document.getElementById('bt-progress-bar').style.width  = pct + '%';
+    document.getElementById('bt-progress-pct').textContent  = pct + '%';
+    document.getElementById('bt-progress-label').textContent = p.phase || 'Running...';
+    if (!p.running) {
+      clearInterval(btProgressInterval);
+      document.getElementById('bt-progress-card').style.display = 'none';
+    }
+  }, 1000);
+}
+
+async function runOptimizer() {
+  const tickers   = getBacktestTickers();
+  const startDate = document.getElementById('bt-start').value;
+  const endDate   = document.getElementById('bt-end').value;
+  if (!startDate || !endDate || !tickers.length) return alert('Please set dates and tickers');
+
+  document.getElementById('bt-optimize-btn').disabled = true;
+  document.getElementById('bt-run-btn').disabled = true;
+  document.getElementById('bt-progress-label').textContent = 'Starting optimizer...';
+  startProgressPoll();
+
+  try {
+    const res  = await fetch('/api/backtest/optimize', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ tickers, startDate, endDate }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+
+    const { topResults, bestParams, bestMetrics, totalTested } = data.result;
+    bestParamsCache = bestParams;
+
+    // render top 5
+    const el = document.getElementById('bt-top-params');
+    el.innerHTML = topResults.map((r, i) => {
+      const m = r.metrics;
+      const p = r.params;
+      return `<div style="padding:10px;border-radius:8px;background:var(--card2);margin-bottom:8px;${i===0?'border:1px solid var(--blue);':''}">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:12px;font-weight:500;">#${i+1} ${i===0?'★ Best':''}  Sharpe ${m.sharpeRatio}</span>
+          <span style="font-size:11px;color:var(--muted);">${m.totalTrades} trades · ${m.winRate}% WR</span>
+        </div>
+        <div style="font-size:10px;color:var(--muted);line-height:1.8;">
+          RSI ${p.rsiLow}/${p.rsiHigh} · Mom ${p.momentum}% · Min ${p.minCond} cond · IV≤${p.ivMax}
+          · Vol ${p.volMult}× · PT ${p.profitTarget}% · SL ${p.stopLoss}% · ${p.dte}DTE
+          <span style="color:${m.totalPnlDollar>=0?'var(--green)':'var(--red)'};">
+            · P&L ${m.totalPnlDollar>=0?'+':''}$${m.totalPnlDollar}
+          </span>
+        </div>
+      </div>`;
+    }).join('');
+
+    document.getElementById('bt-optimizer-results').style.display = 'block';
+
+    // show best result metrics + chart
+    renderBacktestResult(topResults[0]);
+
+  } catch(e) {
+    alert('Optimizer error: ' + e.message);
+  } finally {
+    document.getElementById('bt-optimize-btn').disabled = false;
+    document.getElementById('bt-run-btn').disabled = false;
+  }
+}
+
+async function runBacktestCurrent() {
+  const tickers   = getBacktestTickers();
+  const startDate = document.getElementById('bt-start').value;
+  const endDate   = document.getElementById('bt-end').value;
+  if (!startDate || !endDate || !tickers.length) return alert('Please set dates and tickers');
+
+  const s = state.settings;
+  const params = {
+    rsiLow: s.rsiLow || 35, rsiHigh: s.rsiHigh || 65,
+    momentum: s.momentum || 0.5, minCond: s.minCond || 3,
+    ivMax: s.ivMax || 35, volMult: s.volMult || 1.5,
+    profitTarget: s.profitTarget || 50, stopLoss: s.stopLoss || 50,
+    dte: s.dte || 3, delta: s.delta || 0.65,
+  };
+
+  document.getElementById('bt-optimize-btn').disabled = true;
+  document.getElementById('bt-run-btn').disabled = true;
+  startProgressPoll();
+
+  try {
+    const res  = await fetch('/api/backtest/run', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ params, tickers, startDate, endDate }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    renderBacktestResult(data.result);
+  } catch(e) {
+    alert('Backtest error: ' + e.message);
+  } finally {
+    document.getElementById('bt-optimize-btn').disabled = false;
+    document.getElementById('bt-run-btn').disabled = false;
+  }
+}
+
+function renderBacktestResult(result) {
+  const { metrics: m, pnlCurve, trades, monthly } = result;
+  document.getElementById('bt-metrics-card').style.display = 'block';
+
+  // metrics
+  document.getElementById('bt-m-trades').textContent  = m.totalTrades;
+  document.getElementById('bt-m-wr').textContent      = m.winRate + '%';
+  document.getElementById('bt-m-pnl').textContent     = (m.totalPnlDollar >= 0 ? '+' : '') + '$' + m.totalPnlDollar;
+  document.getElementById('bt-m-sharpe').textContent  = m.sharpeRatio;
+  document.getElementById('bt-m-dd').textContent      = '-$' + m.maxDrawdown;
+  document.getElementById('bt-m-pf').textContent      = m.profitFactor + 'x';
+
+  document.getElementById('bt-m-pnl').style.color     = m.totalPnlDollar >= 0 ? 'var(--green)' : 'var(--red)';
+
+  // P&L chart
+  if (btChart) btChart.destroy();
+  const ctx = document.getElementById('bt-pnl-chart').getContext('2d');
+  btChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: pnlCurve.map(p => p.date),
+      datasets: [{
+        data: pnlCurve.map(p => p.value),
+        borderColor: pnlCurve[pnlCurve.length-1]?.value >= 0 ? '#3b6d11' : '#a32d2d',
+        borderWidth: 2,
+        fill: true,
+        backgroundColor: pnlCurve[pnlCurve.length-1]?.value >= 0 ? 'rgba(59,109,17,0.08)' : 'rgba(163,45,45,0.08)',
+        tension: 0.3,
+        pointRadius: 0,
+      }],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6, font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { font: { size: 10 }, callback: v => '$' + v }, grid: { color: 'rgba(0,0,0,0.05)' } },
+      },
+    },
+  });
+
+  // Monthly breakdown
+  const mEl = document.getElementById('bt-monthly');
+  mEl.innerHTML = monthly.map(mo => {
+    const pos = mo.pnl >= 0;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:11px;">
+      <span style="color:var(--muted);">${mo.month}</span>
+      <span>${mo.trades} trades · ${mo.winRate}% WR</span>
+      <span style="color:${pos?'var(--green)':'var(--red)'};">${pos?'+':''}$${mo.pnl}</span>
+    </div>`;
+  }).join('');
+
+  // Trade table (last 50)
+  document.getElementById('bt-trade-count').textContent = `Showing last 50 of ${trades.length} simulated trades`;
+  const tEl = document.getElementById('bt-trades');
+  tEl.innerHTML = trades.slice(-50).reverse().map(t => `
+    <div style="padding:8px;border-bottom:0.5px solid var(--border);font-size:11px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+        <span style="font-weight:500;">${t.sym} <span style="color:${t.direction==='call'?'var(--green)':'var(--red)'};">${t.direction.toUpperCase()}</span></span>
+        <span style="color:${t.win?'var(--green)':'var(--red)'};">${t.pnlPct>=0?'+':''}${t.pnlPct}%</span>
+      </div>
+      <div style="color:var(--muted);">${t.entryDate} → ${t.exitDate} · RSI ${t.rsi} · IV ${t.ivRank} · ${t.closeReason}</div>
+    </div>`).join('');
+}
+
+async function applyBestParams() {
+  if (!bestParamsCache) return;
+  const p = bestParamsCache;
+  const mapping = { rsiLow:'s-rsiLow', rsiHigh:'s-rsiHigh', momentum:'s-momentum',
+    minCond:'s-minCond', ivMax:'s-ivMax', volMult:'s-volMult',
+    profitTarget:'s-profitTarget', stopLoss:'s-stopLoss', dte:'s-dte' };
+  Object.entries(mapping).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (el && p[key] != null) el.value = p[key];
+  });
+  await saveSettings();
+  alert('Best parameters applied and saved to Settings!');
+}
+
 // ── Navigation ────────────────────────────────────────────────────────────────
 function showPage(name, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(`page-${name}`).classList.add('active');
   btn.classList.add('active');
+  if (name === 'backtest') initBacktestDates();
 }
 
 function switchSubtab(tab, btn) {
