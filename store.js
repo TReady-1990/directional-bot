@@ -40,8 +40,11 @@ const DEFAULT_STATE = {
     ivMax:        35,
     minCond:      3,
     momentum:     0.5,
-    scanInterval: 60,
-    fillTimeout:  3,
+    scanInterval:    60,
+    fillTimeout:     3,
+    maxRiskPerTrade: 10,   // max % of account per single trade
+    maxDailyLoss:    5,    // % drop in account that halts trading for the day
+    maxExposure:     30,   // max % of account in open positions simultaneously
   },
   autoEnabled: false,
   autoCount:   0,

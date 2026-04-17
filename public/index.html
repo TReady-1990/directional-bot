@@ -31,8 +31,23 @@
     }
     body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; padding-bottom:80px; }
 
+    /* ── TICKER STRIP ── */
+    .ticker-strip { background:var(--card); border-bottom:0.5px solid var(--border); height:34px; overflow:hidden; display:flex; align-items:center; position:sticky; top:0; z-index:101; }
+    .ticker-strip-inner { display:flex; align-items:center; overflow-x:auto; scrollbar-width:none; width:100%; padding:0 10px; gap:0; }
+    .ticker-strip-inner::-webkit-scrollbar { display:none; }
+    .price-chip { display:flex; align-items:center; gap:5px; padding:0 12px; height:34px; border-right:0.5px solid var(--border); white-space:nowrap; flex-shrink:0; }
+    .price-chip .sym { font-size:10px; font-weight:500; letter-spacing:0.04em; }
+    .price-chip .px  { font-size:11px; font-weight:500; }
+    .price-chip .chg { font-size:10px; }
+    .strip-badge { font-size:9px; padding:1px 6px; border-radius:10px; margin-left:auto; flex-shrink:0; letter-spacing:0.06em; }
+    .strip-live { background:var(--bg-green); color:var(--green); }
+    .strip-sim  { background:var(--card2);    color:var(--faint); }
+    @keyframes flashUp { 0%{color:var(--green)} 100%{color:var(--text)} }
+    @keyframes flashDn { 0%{color:var(--red)}   100%{color:var(--text)} }
+    .px-up { animation:flashUp 0.6s; } .px-dn { animation:flashDn 0.6s; }
+
     /* ── TOP BAR ── */
-    .topbar { position:sticky; top:0; z-index:100; background:var(--card); border-bottom:0.5px solid var(--border); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; }
+    .topbar { background:var(--card); border-bottom:0.5px solid var(--border); padding:10px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:34px; z-index:100; }
     .topbar-title { font-size:14px; font-weight:500; letter-spacing:0.04em; display:flex; align-items:center; gap:8px; }
     .dot { width:7px; height:7px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
     .dot.off { background:var(--faint); animation:none; }
@@ -114,6 +129,7 @@
     .pos-badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; }
     .badge-pending  { background:var(--bg-orange); color:var(--orange); }
     .badge-filled   { background:var(--bg-green);  color:var(--green);  }
+    .badge-closing  { background:var(--bg-purple); color:var(--purple); animation:pulse 1.5s infinite; }
     .badge-auto     { background:var(--bg-blue);   color:var(--blue);   }
     .badge-external { background:var(--bg-purple); color:var(--purple); }
     .badge-profit   { background:var(--bg-green);  color:var(--green);  }
@@ -169,11 +185,26 @@
     .learn-stat { background:var(--card2); border-radius:8px; padding:10px 12px; }
     .learn-stat-label { font-size:10px; color:var(--muted); letter-spacing:0.06em; margin-bottom:4px; }
     .learn-stat-val   { font-size:16px; font-weight:500; }
-    .finding { font-size:11px; padding:8px 12px; border-radius:8px; background:var(--card2); margin-bottom:6px; line-height:1.5; }
-    .threshold-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:0.5px solid var(--border); font-size:12px; }
+    .finding { font-size:11px; padding:8px 12px; border-radius:8px; background:var(--card2); margin-bottom:6px; line-height:1.5; display:flex; gap:8px; align-items:flex-start; }
+    .finding.positive { background:var(--bg-green); color:var(--green); }
+    .finding.negative { background:var(--bg-red);   color:var(--red);   }
+    .finding.neutral  { background:var(--bg-orange); color:var(--orange); }
+    .finding.info     { background:var(--bg-blue);   color:var(--blue);  }
+    .finding-icon { font-size:13px; flex-shrink:0; margin-top:1px; }
+    .finding strong { font-weight:500; }
+    .threshold-row { display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:0.5px solid var(--border); font-size:12px; }
     .threshold-row:last-child { border-bottom:none; }
     .threshold-name { color:var(--muted); }
-    .threshold-val  { font-weight:500; }
+    .threshold-val  { font-weight:500; display:flex; align-items:center; gap:6px; }
+    .thresh-change { font-size:10px; }
+    .thresh-up   { color:var(--green); }
+    .thresh-down { color:var(--red); }
+    .ticker-perf-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; margin-bottom:14px; }
+    .ticker-perf { padding:4px 10px; border-radius:20px; font-size:11px; font-weight:500; background:var(--card2); color:var(--muted); display:flex; align-items:center; gap:5px; }
+    .ticker-perf.hot  { background:var(--bg-green); color:var(--green); }
+    .ticker-perf.cold { background:var(--bg-red);   color:var(--red);   }
+    .learn-section { font-size:10px; letter-spacing:0.08em; color:var(--faint); font-weight:500; margin:12px 0 8px; }
+    .learn-last { font-size:11px; color:var(--muted); margin-top:10px; text-align:center; }
 
     /* ── TABS (open/closed) ── */
     .subtabs { display:flex; gap:4px; margin-bottom:12px; }
@@ -187,6 +218,14 @@
   </style>
 </head>
 <body>
+
+<!-- TICKER STRIP -->
+<div class="ticker-strip">
+  <div class="ticker-strip-inner" id="ticker-strip-inner">
+    <div class="price-chip"><span class="sym" style="color:var(--faint);">Loading prices...</span></div>
+  </div>
+  <span class="strip-badge strip-sim" id="strip-badge" style="margin-right:8px;">SIM</span>
+</div>
 
 <!-- TOP BAR -->
 <div class="topbar">
@@ -212,6 +251,11 @@
       <input type="checkbox" id="bot-toggle" onchange="toggleBot(this)">
       <span class="slider"></span>
     </label>
+  </div>
+
+  <!-- Risk alert banner (hidden by default) -->
+  <div id="risk-banner" style="display:none;background:var(--bg-red);color:var(--red);border-radius:var(--r);padding:12px 16px;margin-bottom:12px;font-size:12px;line-height:1.6;">
+    <strong>⚠ Risk Gate</strong> — <span id="risk-banner-text"></span>
   </div>
 
   <!-- Metrics -->
@@ -289,6 +333,23 @@
     <div class="setting-group"><div class="setting-label">TRAILING STOP ($)</div><div class="setting-row"><input class="setting-input" type="number" id="s-trailDollar" value="0.50" min="0.05" max="5.00" step="0.05"><span class="setting-unit">$ from peak</span></div></div>
     <div class="setting-group"><div class="setting-label">COOLDOWN AFTER STOP</div><div class="setting-row"><input class="setting-input" type="number" id="s-cooldown" value="15" min="5" max="120"><span class="setting-unit">min</span></div></div>
     <div class="setting-group"><div class="setting-label">TIME FILTER (open/close)</div><div class="setting-row"><input class="setting-input" type="number" id="s-timeFilt" value="30" min="0" max="60"><span class="setting-unit">min</span></div></div>
+    <div class="settings-section">LIVE TRADING RISK CONTROLS</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.6;">These limits protect your account when trading with real money. The bot checks buying power and risk limits before every order.</div>
+    <div class="setting-group">
+      <div class="setting-label">MAX RISK PER TRADE</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Max % of account value for a single options order (cost = mid × 100 × contracts)</div>
+      <div class="setting-row"><input class="setting-input" type="number" id="s-maxRiskPerTrade" value="10" min="1" max="50" step="1"><span class="setting-unit">% of account</span></div>
+    </div>
+    <div class="setting-group">
+      <div class="setting-label">MAX DAILY LOSS</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Bot stops placing new orders for the day if account drops by this %</div>
+      <div class="setting-row"><input class="setting-input" type="number" id="s-maxDailyLoss" value="5" min="1" max="25" step="1"><span class="setting-unit">% of account</span></div>
+    </div>
+    <div class="setting-group">
+      <div class="setting-label">MAX TOTAL EXPOSURE</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Max % of account value in open options positions at once</div>
+      <div class="setting-row"><input class="setting-input" type="number" id="s-maxExposure" value="30" min="5" max="100" step="5"><span class="setting-unit">% of account</span></div>
+    </div>
     <button class="btn btn-full btn-primary" onclick="saveSettings()">Save Settings</button>
   </div>
 
@@ -302,15 +363,26 @@
   </div>
 
   <div class="card">
-    <div class="card-title">LEARNING ENGINE</div>
+    <div class="card-header" style="margin-bottom:12px;">
+      <div class="card-title">LEARNING ENGINE</div>
+      <button class="btn" onclick="runLearning()">↻ Analyze</button>
+    </div>
     <div class="learning-stats">
       <div class="learn-stat"><div class="learn-stat-label">TRADES</div><div class="learn-stat-val" id="l-total">0</div></div>
       <div class="learn-stat"><div class="learn-stat-label">WIN RATE</div><div class="learn-stat-val" id="l-wr">—</div></div>
       <div class="learn-stat"><div class="learn-stat-label">ADAPTATIONS</div><div class="learn-stat-val" id="l-adapt">0</div></div>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;letter-spacing:0.06em;">THRESHOLDS</div>
+
+    <div class="learn-section">CURRENT THRESHOLDS</div>
     <div id="threshold-list"></div>
-    <button class="btn btn-full" onclick="runLearning()" style="margin-top:10px;">↻ Analyze Now</button>
+
+    <div class="learn-section">TICKER PERFORMANCE</div>
+    <div class="ticker-perf-grid" id="ticker-perf-grid"><span style="font-size:11px;color:var(--faint);">No ticker data yet</span></div>
+
+    <div class="learn-section">FINDINGS &amp; ADJUSTMENTS</div>
+    <div id="learn-findings"><div class="finding info"><span class="finding-icon">ℹ</span><span>Waiting for closed trades. Analysis runs every 5 trades automatically.</span></div></div>
+
+    <div class="learn-last" id="learn-last"></div>
   </div>
 </div>
 
@@ -326,6 +398,55 @@
 // ── WebSocket connection ───────────────────────────────────────────────────────
 let ws, pnlChart = null, activityLog = [], currentTab = 'open';
 let state = { openPositions:[], closedPositions:[], pnlHistory:[], signals:{}, watchlist:[], settings:{}, learnedThresholds:{}, adaptationCount:0, tradeMemory:[] };
+let priceCache = {}; // { SYM: { price, chgPct, chg } }
+let prevPriceCache = {};
+
+function handlePrices(data) {
+  prevPriceCache = { ...priceCache };
+  priceCache = data;
+  renderTickerStrip();
+}
+
+function renderTickerStrip() {
+  const strip  = document.getElementById('ticker-strip-inner');
+  const badge  = document.getElementById('strip-badge');
+  if (!strip) return;
+
+  const syms = state.watchlist.length ? state.watchlist : Object.keys(priceCache);
+  if (!syms.length) return;
+
+  const isLive = Object.values(priceCache).some(q => q.live);
+  if (badge) {
+    badge.textContent  = isLive ? 'LIVE' : 'SIM';
+    badge.className    = `strip-badge ${isLive ? 'strip-live' : 'strip-sim'}`;
+  }
+
+  strip.innerHTML = syms.map(sym => {
+    const q = priceCache[sym];
+    if (!q || !q.price) return `<div class="price-chip"><span class="sym">${sym}</span><span class="px" style="color:var(--faint);">—</span></div>`;
+    const up    = q.chgPct >= 0;
+    const color = up ? 'var(--green)' : 'var(--red)';
+    const arrow = up ? '▲' : '▼';
+    const prev  = prevPriceCache[sym]?.price;
+    const flash = prev != null ? (q.price > prev ? ' px-up' : q.price < prev ? ' px-dn' : '') : '';
+    return `<div class="price-chip">
+      <span class="sym">${sym}</span>
+      <span class="px${flash}">$${q.price.toFixed(2)}</span>
+      <span class="chg" style="color:${color}">${arrow}${Math.abs(q.chgPct).toFixed(2)}%</span>
+    </div>`;
+  }).join('');
+}
+
+function showRiskAlert(data) {
+  const banner = document.getElementById('risk-banner');
+  const text   = document.getElementById('risk-banner-text');
+  if (!banner || !text) return;
+  text.textContent = data.reason || 'Risk limit triggered';
+  banner.style.display = 'block';
+  addLogEntry({ msg: `⚠ RISK GATE: ${data.reason}`, type: 'err', time: new Date().toLocaleTimeString() });
+  // auto-hide after 60 seconds
+  setTimeout(() => { banner.style.display = 'none'; }, 60000);
+}
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -357,6 +478,7 @@ function handleMessage(type, data) {
       state.learnedThresholds= data.learnedThresholds|| {};
       state.adaptationCount  = data.adaptationCount  || 0;
       state.tradeMemory      = data.tradeMemory      || [];
+      if (data.prices) { priceCache = data.prices; renderTickerStrip(); }
       applySettings(state.settings);
       renderAll(data.status, data.metrics, data.account);
       break;
@@ -368,12 +490,14 @@ function handleMessage(type, data) {
     case 'account':    renderAccount(data);   break;
     case 'status':     renderStatus(data);    break;
     case 'log':        addLogEntry(data);     break;
+    case 'prices':     handlePrices(data);    break;
+    case 'risk':       showRiskAlert(data);   break;
     case 'settings':   state.settings = data; applySettings(data); break;
     case 'watchlist':  state.watchlist = data; renderWatchlist(); break;
     case 'learning':
-      state.learnedThresholds = data.learnedThresholds;
-      state.adaptationCount   = data.adaptationCount;
-      state.tradeMemory       = data.tradeMemory || state.tradeMemory;
+      state.learnedThresholds = data.learnedThresholds || state.learnedThresholds;
+      state.adaptationCount   = data.adaptationCount   ?? state.adaptationCount;
+      state.tradeMemory       = data.tradeMemory        || state.tradeMemory;
       renderLearning();
       break;
   }
@@ -490,7 +614,10 @@ function renderPositions() {
       const cls    = pnl >= 0 ? 'pos' : 'neg';
       const sign   = pnl >= 0 ? '+' : '';
       const srcBadge = p.source === 'auto' ? '<span class="pos-badge badge-auto">AUTO</span>' : p.source === 'external' ? '<span class="pos-badge badge-external">EXT</span>' : '<span style="font-size:10px;color:var(--muted)">manual</span>';
-      const statusBadge = p.orderStatus === 'pending' ? '<span class="pos-badge badge-pending">PENDING</span>' : '<span class="pos-badge badge-filled">FILLED</span>';
+      const statusBadge = p.orderStatus === 'pending'          ? '<span class="pos-badge badge-pending">PENDING</span>'
+        : p.orderStatus === 'closing' || p.orderStatus === 'closing-partial'
+          ? `<span class="pos-badge badge-closing">CLOSING #${p.closeOrderId||''}</span>`
+          : '<span class="pos-badge badge-filled">FILLED</span>';
       return `<div class="pos-card">
         <div class="pos-header">
           <div style="display:flex;align-items:center;gap:8px;">
@@ -508,9 +635,19 @@ function renderPositions() {
           ${p.peakValue > p.costBasis ? `<div class="pos-item"><div class="pos-item-label">PEAK</div><div class="pos-item-val">$${p.peakValue?.toFixed(2)}</div></div>` : ''}
           <div class="pos-item"><div class="pos-item-label">QTY</div><div class="pos-item-val">${p.quantity || 1}${p.partialClosed ? ' (partial)' : ''}</div></div>
         </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <div><div class="pos-pnl ${cls}">${sign}$${Math.abs(pnl * 100).toFixed(0)}<span style="font-size:12px;"> /contract</span></div><div style="font-size:12px;" class="${cls}">${sign}${pnlPct}%</div></div>
-          <button class="btn btn-danger" onclick="closePosition(${p.id})">${p.orderStatus === 'pending' ? 'Cancel' : 'Close'}</button>
+          ${p.orderStatus === 'pending'
+            ? `<button class="btn btn-danger" onclick="closePosition(${p.id},1)">Cancel</button>`
+            : p.orderStatus === 'closing' || p.orderStatus === 'closing-partial'
+              ? `<button class="btn" disabled style="opacity:0.5;">Closing...</button>`
+              : `<div style="display:flex;align-items:center;gap:6px;">
+                  ${(p.quantity||1) > 1 ? `<select id="qty-${p.id}" style="font-family:var(--font);font-size:12px;padding:6px 8px;border-radius:8px;border:0.5px solid var(--border);background:var(--card2);color:var(--text);">
+                    ${Array.from({length:p.quantity||1},(_,i)=>i+1).map(n=>`<option value="${n}">${n} contract${n>1?'s':''}</option>`).join('')}
+                  </select>` : ''}
+                  <button class="btn btn-danger" onclick="closePosition(${p.id}, ${(p.quantity||1) > 1 ? `parseInt(document.getElementById('qty-${p.id}').value)` : 1})">Close</button>
+                </div>`
+          }
         </div>
       </div>`;
     }).join('');
@@ -577,20 +714,120 @@ function renderLearning() {
   const wins = tradeMemory.filter(t => t.win).length;
   const wr   = tradeMemory.length ? Math.round(wins / tradeMemory.length * 100) : null;
   const set  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
   set('l-total', tradeMemory.length);
   set('l-wr',    wr !== null ? wr + '%' : '—');
   set('l-adapt', adaptationCount);
+
+  const nextAnalysis = tradeMemory.length
+    ? Math.ceil(tradeMemory.length / 5) * 5 + 5 - (tradeMemory.length % 5 || 5)
+    : 5;
+  const lastEl = document.getElementById('learn-last');
+  if (lastEl) lastEl.textContent = tradeMemory.length
+    ? `Next analysis at trade #${tradeMemory.length + (5 - (tradeMemory.length % 5 || 5))}`
+    : 'Waiting for first closed trade';
+
+  // ── Thresholds ──────────────────────────────────────────────────────────────
+  const DEFAULT = { momentum:0.5, rsiLow:35, rsiHigh:65, ivMax:35, volMult:1.5, minCond:3 };
   const tlist = document.getElementById('threshold-list');
   if (tlist && lt) {
     tlist.innerHTML = [
-      ['Momentum min', lt.momentum, '%'],
-      ['RSI oversold', lt.rsiLow, ''],
-      ['RSI overbought', lt.rsiHigh, ''],
-      ['IV Rank max', lt.ivMax, ''],
-      ['Volume spike', lt.volMult, '×'],
-      ['Min conditions', lt.minCond, '/4'],
-    ].map(([n, v, u]) => `<div class="threshold-row"><span class="threshold-name">${n}</span><span class="threshold-val">${v}${u}</span></div>`).join('');
+      ['Momentum min',    'momentum', v => v+'%'],
+      ['RSI oversold ≤',  'rsiLow',   v => v],
+      ['RSI overbought ≥','rsiHigh',  v => v],
+      ['IV Rank max',     'ivMax',    v => v],
+      ['Volume spike',    'volMult',  v => v+'×'],
+      ['Min conditions',  'minCond',  v => v+'/4'],
+    ].map(([label, key, fmt]) => {
+      const cur = lt[key], def = DEFAULT[key];
+      const diff = cur !== def ? (cur > def ? `<span class="thresh-change thresh-up">▲ from ${def}</span>` : `<span class="thresh-change thresh-down">▼ from ${def}</span>`) : '';
+      return `<div class="threshold-row"><span class="threshold-name">${label}</span><span class="threshold-val">${fmt(cur)}${diff}</span></div>`;
+    }).join('');
   }
+
+  // ── Ticker performance ───────────────────────────────────────────────────────
+  const tpGrid = document.getElementById('ticker-perf-grid');
+  if (tpGrid && tradeMemory.length) {
+    const stats = {};
+    tradeMemory.forEach(t => {
+      if (!stats[t.sym]) stats[t.sym] = { wins:0, total:0 };
+      stats[t.sym].wins  += t.win ? 1 : 0;
+      stats[t.sym].total += 1;
+    });
+    tpGrid.innerHTML = Object.entries(stats)
+      .sort((a,b) => b[1].total - a[1].total)
+      .map(([sym, s]) => {
+        const wr = Math.round(s.wins / s.total * 100);
+        const cls = wr >= 60 ? 'hot' : wr <= 40 ? 'cold' : '';
+        return `<div class="ticker-perf ${cls}"><strong>${sym}</strong><span>${wr}% · ${s.total}t</span></div>`;
+      }).join('');
+  }
+
+  // ── Findings (generated from trade data) ─────────────────────────────────────
+  const fEl = document.getElementById('learn-findings');
+  if (!fEl || !tradeMemory.length) return;
+
+  const findings = [];
+
+  // overall win rate
+  if (tradeMemory.length >= 5) {
+    if (wr >= 70) findings.push({ type:'positive', icon:'✓', text:`<strong>Strong win rate: ${wr}%</strong> across ${tradeMemory.length} trades. Signal conditions are well-calibrated.` });
+    else if (wr <= 45) findings.push({ type:'negative', icon:'✗', text:`<strong>Low win rate: ${wr}%</strong> across ${tradeMemory.length} trades. Consider raising minimum conditions to ${Math.min(4, (lt.minCond||3)+1)}.` });
+    else findings.push({ type:'neutral', icon:'◎', text:`<strong>Win rate: ${wr}%</strong> across ${tradeMemory.length} trades. Building history — more data improves analysis accuracy.` });
+  }
+
+  // stop loss frequency
+  const stopLossTrades = tradeMemory.filter(t => t.closeReason === 'stop loss');
+  if (stopLossTrades.length >= 3) {
+    const stopPct = Math.round(stopLossTrades.length / tradeMemory.length * 100);
+    if (stopPct > 35) findings.push({ type:'negative', icon:'⚠', text:`<strong>${stopPct}% of trades hitting stop loss</strong> — consider raising the minimum conditions threshold to filter weaker signals.` });
+  }
+
+  // ticker-specific insights
+  const stats2 = {};
+  tradeMemory.forEach(t => {
+    if (!stats2[t.sym]) stats2[t.sym] = { wins:0, total:0 };
+    stats2[t.sym].wins  += t.win ? 1 : 0;
+    stats2[t.sym].total += 1;
+  });
+  Object.entries(stats2).forEach(([sym, s]) => {
+    if (s.total < 3) return;
+    const wr = Math.round(s.wins / s.total * 100);
+    if (wr >= 80) findings.push({ type:'positive', icon:'★', text:`<strong>${sym} is your best performer</strong> — ${wr}% win rate over ${s.total} trades. Bot is heavily weighting this signal.` });
+    if (wr <= 35) findings.push({ type:'negative', icon:'↓', text:`<strong>${sym} is underperforming</strong> — only ${wr}% win rate over ${s.total} trades. Signals on this ticker may be unreliable.` });
+  });
+
+  // condition analysis
+  const condKeys = ['momentum','rsi','iv','volume'];
+  const condLabels = { momentum:'Momentum', rsi:'RSI', iv:'IV Rank', volume:'Volume' };
+  condKeys.forEach(k => {
+    const withCond    = tradeMemory.filter(t => t.snapshot && t.snapshot[k]);
+    const withoutCond = tradeMemory.filter(t => t.snapshot && !t.snapshot[k]);
+    if (withCond.length < 3) return;
+    const wrWith = Math.round(withCond.filter(t=>t.win).length / withCond.length * 100);
+    if (wrWith >= 70) findings.push({ type:'positive', icon:'✓', text:`<strong>${condLabels[k]}</strong> condition correlates strongly with wins — ${wrWith}% win rate when met (${withCond.length} trades).` });
+    else if (wrWith <= 40 && withCond.length >= 5) findings.push({ type:'negative', icon:'✗', text:`<strong>${condLabels[k]}</strong> may be adding noise — only ${wrWith}% win rate when met (${withCond.length} trades).` });
+  });
+
+  // profit target vs stop loss ratio
+  const profitTrades = tradeMemory.filter(t => t.closeReason === 'profit target');
+  const trailTrades  = tradeMemory.filter(t => t.closeReason === 'trailing stop');
+  if (trailTrades.length > 0) {
+    findings.push({ type:'info', icon:'◈', text:`<strong>Trailing stop active:</strong> ${trailTrades.length} trades closed by trailing stop vs ${profitTrades.length} by profit target. Trailing stop is protecting gains on winners.` });
+  }
+
+  // threshold adaptations
+  if (adaptationCount > 0) {
+    findings.push({ type:'info', icon:'⟳', text:`<strong>${adaptationCount} threshold adaptation${adaptationCount!==1?'s':''} made</strong> since bot started. Current thresholds reflect ${tradeMemory.length} trades of learned behavior.` });
+  }
+
+  if (!findings.length) {
+    findings.push({ type:'info', icon:'ℹ', text:`Analysis complete — no threshold adjustments needed yet. Current settings performing within expected ranges across ${tradeMemory.length} trades.` });
+  }
+
+  fEl.innerHTML = findings.map(f =>
+    `<div class="finding ${f.type}"><span class="finding-icon">${f.icon}</span><span>${f.text}</span></div>`
+  ).join('');
 }
 
 function addLogEntry(entry) {
@@ -634,9 +871,15 @@ async function syncAccount() {
   if (data.account) renderAccount(data.account);
 }
 
-async function closePosition(id) {
-  if (!confirm('Close this position?')) return;
-  await fetch(`/api/positions/close/${id}`, { method: 'POST' });
+async function closePosition(id, qty) {
+  const qty_ = qty || 1;
+  const msg  = qty_ > 1 ? `Close ${qty_} contracts on this position?` : 'Close this position?';
+  if (!confirm(msg)) return;
+  await fetch(`/api/positions/close/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity: qty_ }),
+  });
 }
 
 async function manualTrade(sym, direction) {
@@ -659,7 +902,12 @@ async function removeTicker(sym) {
 async function runLearning() {
   const res  = await fetch('/api/learning/run', { method: 'POST' });
   const data = await res.json();
-  state.learnedThresholds = data.learnedThresholds;
+  state.learnedThresholds = data.learnedThresholds || state.learnedThresholds;
+  // fetch full learning data to get latest tradeMemory and adaptationCount
+  const res2  = await fetch('/api/learning');
+  const data2 = await res2.json();
+  state.tradeMemory     = data2.tradeMemory     || state.tradeMemory;
+  state.adaptationCount = data2.adaptationCount ?? state.adaptationCount;
   renderLearning();
 }
 

@@ -42,7 +42,7 @@ function getETTime() {
   const isDST = month >= 2 && month <= 10;
   return new Date(utcMs + ((isDST ? -4 : -5) * 3600000));
 }
-
+}
 
 function isMarketOpen() {
   const et  = getETTime();
@@ -245,6 +245,92 @@ async function getOrderStatus(orderId) {
 // ── Cooldown tracking ─────────────────────────────────────────────────────────
 const cooldownMap = {};
 
+// ── Risk state ────────────────────────────────────────────────────────────────
+// Tracks live account data for pre-trade risk checks
+let liveAccountCache = { equity: 0, cash: 0, obp: 0, dayPnl: 0, dayStartEquity: 0, lastFetched: 0 };
+
+async function fetchAccountForRisk() {
+  // cache for 30s to avoid hammering the API
+  if (Date.now() - liveAccountCache.lastFetched < 30000) return liveAccountCache;
+  try {
+    const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/balances`, { headers: paperHeaders() });
+    const data = await res.json();
+    const b    = data?.balances;
+    if (!b) return liveAccountCache;
+    const equity = b.total_equity || 0;
+    // set day start equity once per day (first fetch after midnight ET)
+    const et    = getETTime();
+    const isNewDay = et.getHours() < 1;
+    if (isNewDay || liveAccountCache.dayStartEquity === 0) {
+      liveAccountCache.dayStartEquity = equity;
+    }
+    liveAccountCache = {
+      equity,
+      cash:            b.total_cash          || 0,
+      obp:             b.option_buying_power || b.buying_power || 0,
+      dayPnl:          b.day_change          || 0,
+      dayStartEquity:  liveAccountCache.dayStartEquity || equity,
+      lastFetched:     Date.now(),
+    };
+    broadcast('account', liveAccountCache);
+    return liveAccountCache;
+  } catch(e) {
+    log(`Risk account fetch error: ${e.message}`, 'err');
+    return liveAccountCache;
+  }
+}
+
+// Returns null if trade is allowed, or a rejection reason string
+async function checkRiskGates(contract, quantity) {
+  const s   = store.get().settings;
+  const acct = await fetchAccountForRisk();
+
+  // ── 1. Buying power check ──────────────────────────────────────────────────
+  const orderCost = contract.mid * 100 * quantity; // options are ×100
+  if (acct.obp > 0 && orderCost > acct.obp) {
+    return `Insufficient buying power — order costs $${orderCost.toFixed(0)}, available $${acct.obp.toFixed(0)}`;
+  }
+
+  // ── 2. Max risk per trade ──────────────────────────────────────────────────
+  const maxRiskPct = (s.maxRiskPerTrade || 10) / 100;
+  const maxRiskDollar = acct.equity * maxRiskPct;
+  if (acct.equity > 0 && orderCost > maxRiskDollar) {
+    return `Max risk per trade exceeded — order costs $${orderCost.toFixed(0)}, max allowed $${maxRiskDollar.toFixed(0)} (${s.maxRiskPerTrade || 10}% of $${acct.equity.toFixed(0)})`;
+  }
+
+  // ── 3. Max daily loss ──────────────────────────────────────────────────────
+  const maxDailyLossPct = (s.maxDailyLoss || 5) / 100;
+  const maxDailyLossDollar = acct.dayStartEquity * maxDailyLossPct;
+  const todayLoss = acct.dayStartEquity - acct.equity;
+  if (todayLoss > 0 && todayLoss >= maxDailyLossDollar) {
+    return `Daily loss limit hit — down $${todayLoss.toFixed(0)} today (limit: $${maxDailyLossDollar.toFixed(0)} / ${s.maxDailyLoss || 5}% of account). Bot paused for the day.`;
+  }
+
+  // ── 4. Max total exposure ──────────────────────────────────────────────────
+  const maxExposurePct = (s.maxExposure || 30) / 100;
+  const maxExposureDollar = acct.equity * maxExposurePct;
+  const { openPositions } = store.get();
+  const currentExposure = openPositions
+    .filter(p => p.orderStatus === 'filled')
+    .reduce((sum, p) => sum + (p.costBasis * 100 * (p.quantity || 1)), 0);
+  const newExposure = currentExposure + orderCost;
+  if (acct.equity > 0 && newExposure > maxExposureDollar) {
+    return `Max exposure limit — current $${currentExposure.toFixed(0)} + new $${orderCost.toFixed(0)} = $${newExposure.toFixed(0)}, limit $${maxExposureDollar.toFixed(0)} (${s.maxExposure || 30}% of account)`;
+  }
+
+  return null; // all checks passed
+}
+
+// Daily loss check — call this before each scan to halt trading if limit hit
+async function isDailyLossLimitHit() {
+  const s    = store.get().settings;
+  const acct = await fetchAccountForRisk();
+  if (!acct.dayStartEquity || !acct.equity) return false;
+  const loss    = acct.dayStartEquity - acct.equity;
+  const maxLoss = acct.dayStartEquity * ((s.maxDailyLoss || 5) / 100);
+  return loss >= maxLoss;
+}
+
 function isOnCooldown(sym) {
   const ts = cooldownMap[sym];
   if (!ts) return false;
@@ -268,7 +354,16 @@ async function enterTrade(sym, direction, source = 'auto') {
     log(`Fetching ${direction.toUpperCase()} chain for ${sym}...`, 'order');
     contract = await fetchBestContract(sym, direction);
     log(`Contract: ${contract.optionSymbol} · Δ${contract.delta} · mid $${contract.mid} · ${contract.dte}DTE · qty ${quantity}`, 'order');
-    orderId  = await placeBuyOrder(sym, contract, quantity);
+
+    // ── pre-trade risk checks ──────────────────────────────────────────────
+    const rejection = await checkRiskGates(contract, quantity);
+    if (rejection) {
+      log(`RISK GATE BLOCKED — ${sym}: ${rejection}`, 'err');
+      broadcast('risk', { sym, reason: rejection, ts: Date.now() });
+      return;
+    }
+
+    orderId = await placeBuyOrder(sym, contract, quantity);
     log(`ORDER #${orderId} — buy to open ${direction.toUpperCase()} ${quantity}x ${contract.optionSymbol} @ $${contract.mid}`, direction === 'call' ? 'call' : 'put');
   } catch(e) {
     log(`Order failed for ${sym}: ${e.message}`, 'err');
@@ -311,13 +406,22 @@ async function enterTrade(sym, direction, source = 'auto') {
 }
 
 // ── Exit trade ────────────────────────────────────────────────────────────────
-async function exitTrade(id, reason) {
+// Places a sell_to_close order and marks position as 'closing'.
+// checkFillsAndRisk() polls Tradier every 30s and completes the close
+// when the actual fill is confirmed — using the real fill price.
+async function exitTrade(id, reason, manualQty = null) {
   const { openPositions } = store.get();
   const idx = openPositions.findIndex(p => p.id === id);
   if (idx === -1) return;
   const p = openPositions[idx];
 
-  // pending — cancel instead
+  // already closing — don't double-submit
+  if (p.orderStatus === 'closing') {
+    log(`${p.sym} already has a close order pending (#${p.closeOrderId})`, 'scan');
+    return;
+  }
+
+  // pending open order — cancel it instead
   if (p.orderStatus === 'pending' && p.orderId) {
     try { await cancelOrder(p.orderId); log(`Cancelled pending order #${p.orderId} for ${p.sym}`, 'scan'); }
     catch(e) { log(`Cancel failed #${p.orderId}: ${e.message}`, 'err'); }
@@ -327,20 +431,63 @@ async function exitTrade(id, reason) {
     return;
   }
 
-  let closePrice = p.currValue;
+  // determine how many contracts to close
+  const totalQty  = p.quantity || 1;
+  const closeQty  = manualQty && manualQty < totalQty ? manualQty : totalQty;
+  const isPartial = closeQty < totalQty;
+
+  // place the sell order
   let closeOrderId = null;
+  let limitPrice   = p.currValue;
   try {
-    const result = await placeSellOrder(p);
+    const result = await placeSellOrder(p, closeQty);
     closeOrderId = result.closeOrderId;
-    closePrice   = result.closePrice;
-    log(`CLOSE ORDER #${closeOrderId} — sell to close ${p.optionSymbol} @ $${closePrice} · ${reason}`, 'close');
+    limitPrice   = result.closePrice;
+    log(`CLOSE ORDER #${closeOrderId} placed — sell to close ${closeQty}x ${p.optionSymbol} @ $${limitPrice} limit · ${reason}`, 'close');
   } catch(e) {
-    log(`Close failed for ${p.sym}: ${e.message}`, 'err');
+    log(`Close order failed for ${p.sym}: ${e.message}`, 'err');
+    return;
   }
 
-  const pnl    = +(closePrice - p.costBasis).toFixed(2);
+  if (isPartial) {
+    // for partial closes track the close order on the position but keep it open
+    store.update('openPositions', arr => arr.map(x => x.id === id
+      ? { ...x, orderStatus: 'closing-partial', closeOrderId, closeQty, closeReason: reason, closingAt: Date.now() }
+      : x));
+    log(`Waiting for partial close fill on ${p.sym} — ${closeQty}/${totalQty} contracts`, 'scan');
+  } else {
+    // full close — mark as closing, keep in open list until fill confirmed
+    store.update('openPositions', arr => arr.map(x => x.id === id
+      ? { ...x, orderStatus: 'closing', closeOrderId, closeReason: reason, closingAt: Date.now() }
+      : x));
+    log(`Waiting for close fill on ${p.sym} — order #${closeOrderId}`, 'scan');
+  }
+
+  broadcast('positions', store.get().openPositions);
+  broadcast('metrics',   buildMetrics());
+}
+
+// ── Finalize a confirmed close fill ───────────────────────────────────────────
+function finalizeClose(p, fillPrice, isPartial, closeQty) {
+  const id     = p.id;
+  const pnl    = +(fillPrice - p.costBasis).toFixed(2);
   const pnlPct = p.costBasis ? +((pnl / p.costBasis) * 100).toFixed(1) : 0;
-  const closed = { ...p, closePrice, closeOrderId, pnl, pnlPct, win: pnl >= 0, closedAt: new Date().toLocaleTimeString(), closeReason: reason };
+
+  if (isPartial) {
+    const remaining = (p.quantity || 1) - closeQty;
+    store.update('openPositions', arr => arr.map(x => x.id === id
+      ? { ...x, orderStatus: 'filled', quantity: remaining, partialClosed: true,
+          closeOrderId: null, closeReason: null, closingAt: null }
+      : x));
+    log(`PARTIAL CLOSE FILLED — ${p.sym} ${closeQty} contracts @ $${fillPrice.toFixed(2)} · P&L ${pnl>=0?'+':''}$${(pnl*100*closeQty).toFixed(0)} · ${remaining} remaining`, 'fill');
+    broadcast('positions', store.get().openPositions);
+    broadcast('metrics',   buildMetrics());
+    return;
+  }
+
+  // full close confirmed
+  const closed = { ...p, closePrice: fillPrice, pnl, pnlPct, win: pnl >= 0,
+    closedAt: new Date().toLocaleTimeString(), closeReason: p.closeReason || 'manual' };
 
   store.update('openPositions',   arr => arr.filter(x => x.id !== id));
   store.update('closedPositions', arr => [closed, ...arr]);
@@ -348,11 +495,9 @@ async function exitTrade(id, reason) {
   const cumPnl = store.get().closedPositions.reduce((s, t) => s + (t.pnl || 0), 0);
   store.update('pnlHistory', arr => [...arr, { label: '#' + store.get().closedPositions.length, value: +cumPnl.toFixed(2), win: pnl >= 0 }]);
 
-  log(`${p.sym} ${p.direction.toUpperCase()} closed · P&L ${pnl >= 0 ? '+' : ''}$${(pnl * 100).toFixed(0)}/contract (${pnl >= 0 ? '+' : ''}${pnlPct}%) · ${reason}`, pnl >= 0 ? 'fill' : 'err');
+  log(`${p.sym} ${p.direction.toUpperCase()} CLOSE CONFIRMED @ $${fillPrice.toFixed(2)} · P&L ${pnl>=0?'+':''}$${(pnl*100).toFixed(0)}/contract (${pnl>=0?'+':''}${pnlPct}%) · ${closed.closeReason}`, pnl>=0?'fill':'err');
 
-  // feed learning engine
   recordTradeForLearning({ ...closed });
-
   broadcast('positions',  store.get().openPositions);
   broadcast('closed',     store.get().closedPositions);
   broadcast('pnlHistory', store.get().pnlHistory);
@@ -366,6 +511,48 @@ async function checkFillsAndRisk() {
   const stopLoss     = s.stopLoss     / 100;
   const trailPct     = s.trailPct     / 100;
   const trailDollar  = s.trailDollar;
+
+  // 0 — check closing orders (sell_to_close awaiting fill)
+  const closing = store.get().openPositions.filter(p =>
+    (p.orderStatus === 'closing' || p.orderStatus === 'closing-partial') && p.closeOrderId
+  );
+  for (const p of closing) {
+    try {
+      const order = await getOrderStatus(p.closeOrderId);
+      if (!order) continue;
+      const isPartial = p.orderStatus === 'closing-partial';
+
+      if (order.status === 'filled') {
+        const fillPrice = +(order.avg_fill_price || p.currValue);
+        log(`CLOSE FILL CONFIRMED — ${p.sym} #${p.closeOrderId} @ $${fillPrice.toFixed(2)}`, 'fill');
+        finalizeClose(p, fillPrice, isPartial, p.closeQty || p.quantity || 1);
+
+      } else if (order.status === 'canceled' || order.status === 'rejected') {
+        // close order failed — revert position to filled so user can try again
+        log(`CLOSE ORDER ${order.status.toUpperCase()} — ${p.sym} #${p.closeOrderId} · position reverted to open`, 'err');
+        store.update('openPositions', arr => arr.map(x => x.id === p.id
+          ? { ...x, orderStatus: 'filled', closeOrderId: null, closeReason: null, closingAt: null }
+          : x));
+        broadcast('positions', store.get().openPositions);
+        broadcast('risk', { reason: `Close order ${order.status} for ${p.sym} — position is still open. Please try closing again.`, ts: Date.now() });
+
+      } else {
+        // still pending — check for timeout (10 minutes)
+        const closingMs = Date.now() - (p.closingAt || Date.now());
+        if (closingMs > 10 * 60 * 1000) {
+          log(`CLOSE TIMEOUT — ${p.sym} #${p.closeOrderId} unfilled after 10 min · cancelling and reverting`, 'err');
+          try { await cancelOrder(p.closeOrderId); } catch(e) { /* ignore */ }
+          store.update('openPositions', arr => arr.map(x => x.id === p.id
+            ? { ...x, orderStatus: 'filled', closeOrderId: null, closeReason: null, closingAt: null }
+            : x));
+          broadcast('positions', store.get().openPositions);
+          broadcast('risk', { reason: `Close order timed out for ${p.sym} after 10 min — position reverted to open. Market may have moved away from limit price.`, ts: Date.now() });
+        } else {
+          log(`Waiting for close fill on ${p.sym} — order #${p.closeOrderId} (${Math.round(closingMs/60000)}min)`, 'scan');
+        }
+      }
+    } catch(e) { log(`Close order check error ${p.sym}: ${e.message}`, 'err'); }
+  }
 
   // 1 — pending order fills
   const pending = store.get().openPositions.filter(p => p.orderStatus === 'pending' && p.orderId);
@@ -416,7 +603,7 @@ async function checkFillsAndRisk() {
     } catch(e) { /* keep last values */ }
   }
 
-  // 3 — risk checks
+  // 3 — risk checks (skip positions already being closed)
   for (const p of [...store.get().openPositions.filter(p => p.orderStatus === 'filled')]) {
     const pnlPct       = (p.currValue - p.costBasis) / p.costBasis;
     const peak         = p.peakValue || p.costBasis;
@@ -465,23 +652,9 @@ async function checkFillsAndRisk() {
 // ── Account sync ──────────────────────────────────────────────────────────────
 async function syncAccount() {
   if (!process.env.TRADIER_PAPER_TOKEN || !accountId()) return null;
-  try {
-    const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/balances`, { headers: paperHeaders() });
-    const data = await res.json();
-    const b    = data?.balances;
-    if (!b) return null;
-    const summary = {
-      equity:   b.total_equity        || 0,
-      cash:     b.total_cash          || 0,
-      obp:      b.option_buying_power || b.buying_power || 0,
-      dayPnl:   b.day_change          || 0,
-    };
-    broadcast('account', summary);
-    return summary;
-  } catch(e) {
-    log(`Account sync error: ${e.message}`, 'err');
-    return null;
-  }
+  // force refresh the risk cache and return the result
+  liveAccountCache.lastFetched = 0;
+  return await fetchAccountForRisk();
 }
 
 // ── Main scan loop ────────────────────────────────────────────────────────────
@@ -491,6 +664,12 @@ async function runScan() {
   if (scanLock) { log('Scan skipped — previous scan running', 'scan'); return; }
   if (!isMarketOpen())      { log(`Market closed (${etTimeStr()}) — waiting for open`, 'scan'); return; }
   if (!isInTradingWindow()) { log(`Time filter active — no entries within ${store.getSetting('timeFilt')} min of open/close (${etTimeStr()})`, 'scan'); return; }
+  if (await isDailyLossLimitHit()) {
+    const s = store.get().settings;
+    log(`DAILY LOSS LIMIT HIT — bot paused for the day. Limit: ${s.maxDailyLoss || 5}% of account. No new entries until tomorrow.`, 'err');
+    broadcast('risk', { reason: 'Daily loss limit hit — trading paused for the day', ts: Date.now() });
+    return;
+  }
 
   scanLock = true;
   try {
@@ -624,6 +803,7 @@ function stop() {
 }
 
 function getStatus() {
+  const s = store.get().settings;
   return {
     autoEnabled:    store.get().autoEnabled,
     marketOpen:     isMarketOpen(),
@@ -632,6 +812,12 @@ function getStatus() {
     signals,
     cooldowns:      Object.keys(cooldownMap).filter(s => isOnCooldown(s)),
     autoCount:      store.get().autoCount,
+    riskLimits: {
+      maxRiskPerTrade: s.maxRiskPerTrade || 10,
+      maxDailyLoss:    s.maxDailyLoss    || 5,
+      maxExposure:     s.maxExposure     || 30,
+    },
+    account: liveAccountCache,
   };
 }
 
@@ -650,5 +836,5 @@ function init() {
 module.exports = {
   init, start, stop, getStatus, emitter, buildMetrics,
   enterTrade, exitTrade, syncAccount, runScan, runLearningCycle,
-  signals, priceCache, cooldownMap,
+  signals, priceCache, cooldownMap, liveAccountCache,
 };

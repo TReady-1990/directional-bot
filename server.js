@@ -43,6 +43,7 @@ wss.on('connection', ws => {
     tradeMemory:      s.tradeMemory,
     status:           trader.getStatus(),
     metrics:          trader.buildMetrics(),
+    prices:           trader.priceCache,
   }}));
   ws.on('close', () => console.log('[ws] Client disconnected'));
 });
@@ -83,7 +84,8 @@ app.post('/api/watchlist/remove', (req, res) => {
 app.get('/api/positions/open',   (req, res) => res.json(store.get().openPositions));
 app.get('/api/positions/closed', (req, res) => res.json(store.get().closedPositions));
 app.post('/api/positions/close/:id', async (req, res) => {
-  await trader.exitTrade(parseInt(req.params.id), 'manual');
+  const qty = req.body?.quantity || null;
+  await trader.exitTrade(parseInt(req.params.id), 'manual', qty);
   res.json({ ok: true });
 });
 
