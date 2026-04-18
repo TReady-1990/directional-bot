@@ -97,7 +97,10 @@ function backtestTicker(sym, history, params) {
   const RSI_PERIOD = 14;
   const IV_PERIOD  = 20;
   const RISK_FREE  = 0.05;
-  const avgVol = history.slice(-30).reduce((s, d) => s + d.volume, 0) / 30 || 1;
+
+  // compute rolling 30-day avg volume per day (not look-ahead)
+  // if volume data is missing/zero, mark as unavailable
+  const hasVolume = history.some(d => d.volume > 0);
 
   for (let i = RSI_PERIOD + IV_PERIOD; i < history.length - dte - 1; i++) {
     const day      = history[i];
@@ -108,19 +111,26 @@ function backtestTicker(sym, history, params) {
     const rsi       = calculateRSI(closes);
     const chgPct    = ((day.close - prevDay.close) / prevDay.close) * 100;
     const currentIV = estimateIV(ivCloses);
-    const histIVs   = [];
+
+    // build historical IVs only up to day i (no look-ahead)
+    const histIVs = [];
     for (let j = IV_PERIOD; j < i; j++) {
       const slice = history.slice(j - IV_PERIOD, j + 1).map(d => d.close);
       histIVs.push(estimateIV(slice));
     }
-    const ivRank   = estimateIVRank(currentIV, histIVs);
-    const volSpike = day.volume / avgVol;
+    const ivRank = estimateIVRank(currentIV, histIVs);
+
+    // rolling 30-day avg volume ending at day i (no look-ahead)
+    const recentVols = history.slice(Math.max(0, i - 30), i).map(d => d.volume).filter(v => v > 0);
+    const avgVol     = recentVols.length > 0 ? recentVols.reduce((s, v) => s + v, 0) / recentVols.length : 0;
+    const volSpike   = avgVol > 0 ? day.volume / avgVol : 1.0;
 
     // ── Check conditions ──────────────────────────────────────────────────────
     const cMomentum = Math.abs(chgPct) >= momentum;
     const cRsi      = rsi <= rsiLow || rsi >= rsiHigh;
     const cIV       = ivRank <= ivMax;
-    const cVol      = volSpike >= volMult;
+    // if volume data unavailable for this ticker, treat cVol as met (don't penalise)
+    const cVol      = !hasVolume ? true : volSpike >= volMult;
     const metCount  = [cMomentum, cRsi, cIV, cVol].filter(Boolean).length;
 
     if (metCount < minCond) continue;

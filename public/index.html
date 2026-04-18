@@ -1103,11 +1103,16 @@ async function runBacktestCurrent() {
 
   const s = state.settings;
   const params = {
-    rsiLow: s.rsiLow || 35, rsiHigh: s.rsiHigh || 65,
-    momentum: s.momentum || 0.5, minCond: s.minCond || 3,
-    ivMax: s.ivMax || 35, volMult: s.volMult || 1.5,
-    profitTarget: s.profitTarget || 50, stopLoss: s.stopLoss || 50,
-    dte: s.dte || 3, delta: s.delta || 0.65,
+    rsiLow:       s.rsiLow       || 35,
+    rsiHigh:      s.rsiHigh      || 65,
+    momentum:     s.momentum     || 0.3,  // lower for daily data
+    minCond:      s.minCond      || 2,    // 2 of 4 — more signals on daily timeframe
+    ivMax:        s.ivMax        || 50,   // looser IV filter for backtest
+    volMult:      s.volMult      || 1.2,  // lower vol threshold for daily data
+    profitTarget: s.profitTarget || 50,
+    stopLoss:     s.stopLoss     || 50,
+    dte:          s.dte          || 3,
+    delta:        s.delta        || 0.65,
   };
 
   document.getElementById('bt-optimize-btn').disabled = true;
