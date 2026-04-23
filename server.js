@@ -234,8 +234,7 @@ app.post('/api/backtest/optimize', async (req, res) => {
 });
 
 app.get('/api/backtest/progress', (req, res) => res.json(backtestProgress));
-
-// Health check (Railway uses this)
+});
 app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime(), time: new Date().toISOString() }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -264,3 +263,4 @@ app.post('/api/migrate', (req, res) => {
   console.log(`[migrate] Imported: ${tradeMemory?.length||0} trades, ${closedPositions?.length||0} closed, autoCount: ${autoCount||'unchanged'}`);
   res.json({ ok:true, imported:{ trades:tradeMemory?.length||0, closed:closedPositions?.length||0, autoCount: store.get().autoCount } });
 });
+
