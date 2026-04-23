@@ -28,7 +28,7 @@ function broadcast(type, data) {
 }
 
 function log(msg, type = 'scan') {
-  const entry = { msg, type, time: new Date().toLocaleTimeString('en-US', { hour12: false }) };
+  const entry = { msg, type, time: etLocaleTime() };
   console.log(`[bot] [${type}] ${msg}`);
   broadcast('log', entry);
 }
@@ -61,6 +61,14 @@ function isInTradingWindow() {
 function etTimeStr() {
   const et = getETTime();
   return `${et.getHours()}:${String(et.getMinutes()).padStart(2,'0')} ET`;
+}
+
+function etLocaleTime() {
+  const et = getETTime();
+  const h  = String(et.getHours()).padStart(2, '0');
+  const m  = String(et.getMinutes()).padStart(2, '0');
+  const s  = String(et.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s} ET`;
 }
 
 // ── Price cache ───────────────────────────────────────────────────────────────
@@ -383,16 +391,28 @@ async function placeBuyOrder(sym, contract, qty = 1) {
     type: 'limit', price: contract.mid.toFixed(2), duration: 'day',
   });
   const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/orders`, { method: 'POST', headers: paperPost(), body });
-  const data = await res.json();
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch(e) { throw new Error(`Tradier error: ${text.slice(0, 120)}`); }
   if (data?.order?.id) return String(data.order.id);
-  throw new Error(data?.errors?.error || data?.fault?.faultstring || JSON.stringify(data));
+  throw new Error(data?.errors?.error || data?.fault?.faultstring || JSON.stringify(data).slice(0, 120));
 }
 
 async function placeSellOrder(p, qty = null) {
-  const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${p.optionSymbol}`, { headers: prodHeaders() });
-  const qData = await qRes.json();
-  const q     = qData?.quotes?.quote;
-  const mid   = q ? +((q.bid + q.ask) / 2).toFixed(2) : p.currValue;
+  // get current mid price for limit order
+  let mid = p.currValue || 0.01;
+  try {
+    const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${p.optionSymbol}`, { headers: prodHeaders() });
+    const qData = await qRes.json();
+    const q     = qData?.quotes?.quote;
+    if (q && q.bid != null && q.ask != null) {
+      const rawMid = (q.bid + q.ask) / 2;
+      mid = rawMid > 0 ? +rawMid.toFixed(2) : mid;
+    }
+  } catch(e) { /* use last known currValue */ }
+
+  // ensure price is valid — Tradier rejects $0.00 limit orders
+  if (mid < 0.01) mid = 0.01;
 
   const body = new URLSearchParams({
     class: 'option', symbol: p.sym, option_symbol: p.optionSymbol,
@@ -400,9 +420,11 @@ async function placeSellOrder(p, qty = null) {
     type: 'limit', price: mid.toFixed(2), duration: 'day',
   });
   const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/orders`, { method: 'POST', headers: paperPost(), body });
-  const data = await res.json();
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch(e) { throw new Error(`Tradier error: ${text.slice(0, 120)}`); }
   if (data?.order?.id) return { closeOrderId: String(data.order.id), closePrice: mid };
-  throw new Error(data?.errors?.error || data?.fault?.faultstring || JSON.stringify(data));
+  throw new Error(data?.errors?.error || data?.fault?.faultstring || JSON.stringify(data).slice(0, 120));
 }
 
 async function cancelOrder(orderId) {
@@ -566,7 +588,7 @@ async function enterTrade(sym, direction, source = 'auto') {
     partialClosed:false,
     entryPrice:   priceCache[sym]?.price || 0,
     source,
-    openedAt:     new Date().toLocaleTimeString(),
+    openedAt:     etLocaleTime(),
     openedAtMs:   Date.now(),
     entrySnapshot,
   };
@@ -660,7 +682,7 @@ function finalizeClose(p, fillPrice, isPartial, closeQty) {
 
   // full close confirmed
   const closed = { ...p, closePrice: fillPrice, pnl, pnlPct, win: pnl >= 0,
-    closedAt: new Date().toLocaleTimeString(), closeReason: p.closeReason || 'manual' };
+    closedAt: etLocaleTime(), closeReason: p.closeReason || 'manual' };
 
   store.update('openPositions',   arr => arr.filter(x => x.id !== id));
   store.update('closedPositions', arr => [closed, ...arr]);
@@ -960,7 +982,7 @@ function buildMetrics() {
   const realized   = closedPositions.reduce((s, p) => s + (p.pnl || 0), 0);
   const wins       = closedPositions.filter(p => p.win).length;
   const wr         = closedPositions.length ? Math.round(wins / closedPositions.length * 100) : null;
-  return { totalSpent, openPnl, realized, wins, total: closedPositions.length, wr, openCount: openPositions.length };
+  return { totalSpent, openPnl, realized, wins, total: closedPositions.length, wr, openCount: openPositions.length, autoCount: store.get().autoCount || 0 };
 }
 
 // ── Bot start/stop ────────────────────────────────────────────────────────────
