@@ -298,9 +298,12 @@
 </div>
 
 <div class="page" id="page-positions">
-  <div class="subtabs">
-    <button class="subtab active" onclick="switchSubtab('open',this)">Open</button>
-    <button class="subtab" onclick="switchSubtab('closed',this)">Closed</button>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+    <div class="subtabs" style="margin-bottom:0;">
+      <button class="subtab active" onclick="switchSubtab('open',this)">Open</button>
+      <button class="subtab" onclick="switchSubtab('closed',this)">Closed</button>
+    </div>
+    <button class="btn" onclick="syncPositions()" id="sync-pos-btn" style="font-size:11px;">⟳ Sync Tradier</button>
   </div>
   <div id="positions-container"><div class="empty">No open positions</div></div>
 </div>
@@ -637,6 +640,7 @@ function renderMetrics(m) {
   set('m-realized-sub', m.total + ' closed');
   set('m-wr', m.wr !== null ? m.wr + '%' : '—');
   set('m-wr-sub', m.total ? `${m.wins}/${m.total} trades` : 'no closed trades');
+  if (m.autoCount != null) set('m-auto', m.autoCount);
 }
 
 function renderAccount(a) {
@@ -960,6 +964,19 @@ async function syncAccount() {
   const res  = await fetch('/api/account/sync', { method: 'POST' });
   const data = await res.json();
   if (data.account) renderAccount(data.account);
+}
+
+async function syncPositions() {
+  const btn = document.getElementById('sync-pos-btn');
+  if (btn) btn.textContent = '⟳ Syncing...';
+  try {
+    const res = await fetch('/api/positions/sync', { method: 'POST' });
+    const d   = await res.json();
+    if (btn) btn.textContent = `⟳ Sync (${d.positions})`;
+    setTimeout(() => { if (btn) btn.textContent = '⟳ Sync'; }, 3000);
+  } catch(e) {
+    if (btn) btn.textContent = '⟳ Sync';
+  }
 }
 
 async function closePosition(id, qty) {
