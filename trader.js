@@ -776,26 +776,43 @@ async function checkFillsAndRisk() {
     } catch(e) { log(`Fill check error ${p.sym}: ${e.message}`, 'err'); }
   }
 
-  // 2 — update live quotes
-  const filled = store.get().openPositions.filter(p => p.orderStatus === 'filled' && !p.optionSymbol?.includes('SIM'));
-  if (filled.length) {
+  // 2 — update live quotes for all active positions (filled, closing, external)
+  const activeStatuses = ['filled', 'closing', 'closing-partial'];
+  const active = store.get().openPositions.filter(p =>
+    activeStatuses.includes(p.orderStatus) &&
+    p.optionSymbol &&
+    !p.optionSymbol.includes('SIM')
+  );
+  if (active.length) {
     try {
-      const syms  = filled.map(p => p.optionSymbol).join(',');
-      const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${syms}`, { headers: prodHeaders() });
-      const qData = await qRes.json();
-      const rawQ  = qData?.quotes?.quote;
-      const quotes = !rawQ ? [] : (Array.isArray(rawQ) ? rawQ : [rawQ]);
+      // batch in groups of 10 to avoid URL length limits
+      const batches = [];
+      for (let i = 0; i < active.length; i += 10) batches.push(active.slice(i, i + 10));
+      const allQuotes = [];
+      for (const batch of batches) {
+        const syms  = batch.map(p => p.optionSymbol).join(',');
+        const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${syms}`, { headers: prodHeaders() });
+        const qData = await qRes.json();
+        const rawQ  = qData?.quotes?.quote;
+        if (rawQ) allQuotes.push(...(Array.isArray(rawQ) ? rawQ : [rawQ]));
+      }
       store.update('openPositions', arr => arr.map(pos => {
-        const q = quotes.find(x => x.symbol === pos.optionSymbol);
-        if (!q || pos.orderStatus !== 'filled') return pos;
-        const mid  = q.bid != null && q.ask != null ? (q.bid + q.ask) / 2 : (q.last || pos.currValue);
+        const q = allQuotes.find(x => x.symbol === pos.optionSymbol);
+        if (!q || !activeStatuses.includes(pos.orderStatus)) return pos;
+        // use last price if bid/ask spread is unavailable or zero
+        let mid = pos.currValue;
+        if (q.bid != null && q.ask != null && (q.bid + q.ask) > 0) {
+          mid = (parseFloat(q.bid) + parseFloat(q.ask)) / 2;
+        } else if (q.last && parseFloat(q.last) > 0) {
+          mid = parseFloat(q.last);
+        }
         const curr = +mid.toFixed(2);
         const peak = curr > (pos.peakValue || pos.costBasis) ? curr : (pos.peakValue || pos.costBasis);
         return { ...pos, currValue: curr, peakValue: peak, dte: q.days_to_expiration ?? pos.dte };
       }));
       broadcast('positions', store.get().openPositions);
       broadcast('metrics',   buildMetrics());
-    } catch(e) { /* keep last values */ }
+    } catch(e) { log(`Quote update error: ${e.message}`, 'err'); }
   }
 
   // 3 — risk checks (skip positions already being closed)
