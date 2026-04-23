@@ -852,6 +852,101 @@ async function syncAccount() {
   return await fetchAccountForRisk();
 }
 
+// ── External position sync ───────────────────────────────────────────────────
+// Fetches real positions from Tradier and imports any not already tracked by bot
+async function syncExternalPositions() {
+  try {
+    const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/positions`, { headers: paperHeaders() });
+    const data = await res.json();
+    const raw  = data?.positions?.position;
+    if (!raw) return;
+
+    const tradierPositions = Array.isArray(raw) ? raw : [raw];
+    const { openPositions } = store.get();
+    let added = 0;
+
+    for (const tp of tradierPositions) {
+      const sym = tp.symbol || '';
+      // only handle option positions (contain C or P in OCC format)
+      if (!sym.match(/[A-Z]+\d{6}[CP]\d{8}/)) continue;
+
+      // check if already tracked
+      const alreadyTracked = openPositions.some(p => p.optionSymbol === sym);
+      if (alreadyTracked) continue;
+
+      // parse OCC symbol
+      const m = sym.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+      if (!m) continue;
+
+      const ticker    = m[1];
+      const direction = m[3] === 'C' ? 'call' : 'put';
+      const strike    = parseInt(m[4]) / 1000;
+      const expStr    = m[2]; // YYMMDD
+      const expiry    = `20${expStr.slice(0,2)}-${expStr.slice(2,4)}-${expStr.slice(4,6)}`;
+      const qty       = Math.abs(parseInt(tp.quantity || 1));
+      const costBasis = +parseFloat(tp.cost_basis || 0).toFixed(2) / qty / 100; // per share
+
+      // get current quote
+      let currValue = costBasis;
+      try {
+        const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${sym}`, { headers: prodHeaders() });
+        const qData = await qRes.json();
+        const q     = qData?.quotes?.quote;
+        if (q) currValue = +((q.bid + q.ask) / 2).toFixed(2);
+      } catch(e) { /* use cost basis */ }
+
+      const pos = {
+        id:            Date.now() + added,
+        sym:           ticker,
+        direction,
+        optionSymbol:  sym,
+        orderId:       null,
+        orderStatus:   'filled',
+        strike,
+        expiry,
+        dte:           Math.ceil((new Date(expiry) - new Date()) / (1000 * 60 * 60 * 24)),
+        costBasis,
+        currValue,
+        peakValue:     currValue,
+        quantity:      qty,
+        partialClosed: false,
+        entryPrice:    priceCache[ticker]?.price || 0,
+        source:        'external',
+        openedAt:      etLocaleTime(),
+        openedAtMs:    Date.now(),
+        entrySnapshot: {},
+        limitPrice:    costBasis,
+      };
+
+      store.update('openPositions', arr => [...arr, pos]);
+      log(`External position imported: ${ticker} ${direction.toUpperCase()} ${sym} x${qty} @ $${costBasis}`, 'order');
+      added++;
+    }
+
+    if (added > 0) {
+      broadcast('positions', store.get().openPositions);
+      broadcast('metrics',   buildMetrics());
+    }
+
+    // also remove bot positions that no longer exist in Tradier
+    const tradierSyms = tradierPositions.map(p => p.symbol);
+    const stale = store.get().openPositions.filter(p =>
+      p.orderStatus === 'filled' &&
+      p.optionSymbol &&
+      !tradierSyms.includes(p.optionSymbol)
+    );
+    if (stale.length) {
+      log(`Removing ${stale.length} stale position(s) not found in Tradier`, 'scan');
+      stale.forEach(p => store.update('openPositions', arr => arr.filter(x => x.id !== p.id)));
+      broadcast('positions', store.get().openPositions);
+      broadcast('metrics',   buildMetrics());
+    }
+
+  } catch(e) {
+    log(`External position sync error: ${e.message}`, 'err');
+  }
+}
+
 // ── Main scan loop ────────────────────────────────────────────────────────────
 let scanLock = false;
 
@@ -999,6 +1094,7 @@ function start() {
   fillInterval    = setInterval(checkFillsAndRisk, 30000);
   priceInterval   = setInterval(async () => { await fetchPrices(); generateSignals(); }, 10000);
   accountInterval = setInterval(syncAccount,   60000);
+  setInterval(syncExternalPositions, 5 * 60 * 1000); // sync external positions every 5 min
   log(`Bot started — scanning ${store.get().watchlist.length} tickers every ${store.getSetting('scanInterval') || 60}s`, 'order');
   broadcast('status', { autoEnabled: true, marketOpen: isMarketOpen() });
   // run immediately
@@ -1041,6 +1137,7 @@ function init() {
   fetchPrices().then(async () => {
     await prefetchRSI(store.get().watchlist);
     generateSignals();
+    syncExternalPositions(); // import any existing Tradier positions on startup
   });
   syncAccount();
   if (store.get().autoEnabled) {
@@ -1052,7 +1149,7 @@ function init() {
 
 module.exports = {
   init, start, stop, getStatus, emitter, buildMetrics,
-  enterTrade, exitTrade, syncAccount, runScan, runLearningCycle,
+  enterTrade, exitTrade, syncAccount, syncExternalPositions, runScan, runLearningCycle,
   signals, priceCache, cooldownMap, liveAccountCache,
   checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };

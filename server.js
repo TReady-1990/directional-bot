@@ -84,6 +84,10 @@ app.post('/api/watchlist/remove', (req, res) => {
 // Positions
 app.get('/api/positions/open',   (req, res) => res.json(store.get().openPositions));
 app.get('/api/positions/closed', (req, res) => res.json(store.get().closedPositions));
+app.post('/api/positions/sync',  async (req, res) => {
+  await trader.syncExternalPositions();
+  res.json({ ok: true, positions: store.get().openPositions.length });
+});
 app.post('/api/positions/close/:id', async (req, res) => {
   const qty = req.body?.quantity || null;
   await trader.exitTrade(parseInt(req.params.id), 'manual', qty);
