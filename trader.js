@@ -853,94 +853,130 @@ async function syncAccount() {
 }
 
 // ── External position sync ───────────────────────────────────────────────────
-// Fetches real positions from Tradier and imports any not already tracked by bot
+// Tradier is the source of truth. This function rebuilds bot positions
+// to exactly match what Tradier shows — adding missing, updating existing,
+// removing stale. Called on startup and every 5 minutes.
 async function syncExternalPositions() {
   try {
     const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/positions`, { headers: paperHeaders() });
-    const data = await res.json();
-    const raw  = data?.positions?.position;
-    if (!raw) return;
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch(e) {
+      log(`Position sync parse error: ${text.slice(0,80)}`, 'err'); return;
+    }
 
-    const tradierPositions = Array.isArray(raw) ? raw : [raw];
+    const raw = data?.positions?.position;
+
+    // no positions in Tradier — clear all filled bot positions
+    if (!raw) {
+      const { openPositions } = store.get();
+      const filled = openPositions.filter(p => p.orderStatus === 'filled');
+      if (filled.length) {
+        log(`Tradier shows 0 positions — clearing ${filled.length} stale bot position(s)`, 'scan');
+        store.set('openPositions', openPositions.filter(p => p.orderStatus !== 'filled'));
+        broadcast('positions', store.get().openPositions);
+        broadcast('metrics',   buildMetrics());
+      }
+      return;
+    }
+
+    const tradierPositions = (Array.isArray(raw) ? raw : [raw])
+      .filter(tp => {
+        const s = tp.symbol || '';
+        return /^[A-Z]+\d{6}[CP]\d{8}$/.test(s); // options only
+      });
+
     const { openPositions } = store.get();
-    let added = 0;
+    const tradierSyms = tradierPositions.map(tp => tp.symbol);
 
+    // ── Step 1: remove bot positions not in Tradier ───────────────────────────
+    const toRemove = openPositions.filter(p =>
+      p.orderStatus === 'filled' &&
+      p.optionSymbol &&
+      !tradierSyms.includes(p.optionSymbol)
+    );
+    if (toRemove.length) {
+      log(`Removing ${toRemove.length} position(s) no longer in Tradier`, 'scan');
+      toRemove.forEach(p => store.update('openPositions', arr => arr.filter(x => x.id !== p.id)));
+    }
+
+    // ── Step 2: add or update positions from Tradier ──────────────────────────
+    let changed = 0;
     for (const tp of tradierPositions) {
-      const sym = tp.symbol || '';
-      // only handle option positions (contain C or P in OCC format)
-      if (!sym.match(/[A-Z]+\d{6}[CP]\d{8}/)) continue;
-
-      // check if already tracked
-      const alreadyTracked = openPositions.some(p => p.optionSymbol === sym);
-      if (alreadyTracked) continue;
-
-      // parse OCC symbol
-      const m = sym.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+      const sym = tp.symbol;
+      const m   = sym.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
       if (!m) continue;
 
       const ticker    = m[1];
       const direction = m[3] === 'C' ? 'call' : 'put';
       const strike    = parseInt(m[4]) / 1000;
-      const expStr    = m[2]; // YYMMDD
+      const expStr    = m[2];
       const expiry    = `20${expStr.slice(0,2)}-${expStr.slice(2,4)}-${expStr.slice(4,6)}`;
       const qty       = Math.abs(parseInt(tp.quantity || 1));
-      const costBasis = +parseFloat(tp.cost_basis || 0).toFixed(2) / qty / 100; // per share
 
-      // get current quote
+      // cost_basis from Tradier is total cost — divide by qty and 100 for per-share
+      const totalCost = parseFloat(tp.cost_basis || 0);
+      const costBasis = qty > 0 ? +(totalCost / qty / 100).toFixed(2) : 0;
+
+      // get current market quote
       let currValue = costBasis;
       try {
         const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${sym}`, { headers: prodHeaders() });
         const qData = await qRes.json();
         const q     = qData?.quotes?.quote;
-        if (q) currValue = +((q.bid + q.ask) / 2).toFixed(2);
-      } catch(e) { /* use cost basis */ }
+        if (q && q.bid != null && q.ask != null) {
+          const mid = (parseFloat(q.bid) + parseFloat(q.ask)) / 2;
+          if (mid > 0) currValue = +mid.toFixed(2);
+        } else if (q && q.last) {
+          currValue = +parseFloat(q.last).toFixed(2);
+        }
+      } catch(e) { /* keep costBasis */ }
 
-      const pos = {
-        id:            Date.now() + added,
-        sym:           ticker,
-        direction,
-        optionSymbol:  sym,
-        orderId:       null,
-        orderStatus:   'filled',
-        strike,
-        expiry,
-        dte:           Math.ceil((new Date(expiry) - new Date()) / (1000 * 60 * 60 * 24)),
-        costBasis,
-        currValue,
-        peakValue:     currValue,
-        quantity:      qty,
-        partialClosed: false,
-        entryPrice:    priceCache[ticker]?.price || 0,
-        source:        'external',
-        openedAt:      etLocaleTime(),
-        openedAtMs:    Date.now(),
-        entrySnapshot: {},
-        limitPrice:    costBasis,
-      };
+      const daysToExp = Math.max(0, Math.ceil((new Date(expiry) - getETTime()) / (1000 * 60 * 60 * 24)));
 
-      store.update('openPositions', arr => [...arr, pos]);
-      log(`External position imported: ${ticker} ${direction.toUpperCase()} ${sym} x${qty} @ $${costBasis}`, 'order');
-      added++;
+      // check if already tracked — update if so, add if not
+      const existing = store.get().openPositions.find(p => p.optionSymbol === sym);
+      if (existing) {
+        // update quantity and current value to match Tradier
+        store.update('openPositions', arr => arr.map(p => p.optionSymbol === sym
+          ? { ...p, quantity: qty, currValue, dte: daysToExp,
+              peakValue: currValue > p.peakValue ? currValue : p.peakValue }
+          : p));
+      } else {
+        // new position — import from Tradier
+        const pos = {
+          id:            Date.now() + changed,
+          sym:           ticker,
+          direction,
+          optionSymbol:  sym,
+          orderId:       null,
+          orderStatus:   'filled',
+          strike,
+          expiry,
+          dte:           daysToExp,
+          costBasis,
+          currValue,
+          peakValue:     currValue,
+          quantity:      qty,
+          partialClosed: false,
+          entryPrice:    priceCache[ticker]?.price || 0,
+          source:        'external',
+          openedAt:      etLocaleTime(),
+          openedAtMs:    Date.now(),
+          entrySnapshot: {},
+          limitPrice:    costBasis,
+        };
+        store.update('openPositions', arr => [...arr, pos]);
+        log(`Synced from Tradier: ${ticker} ${direction.toUpperCase()} x${qty} @ $${costBasis} (exp ${expiry})`, 'order');
+        changed++;
+      }
     }
 
-    if (added > 0) {
-      broadcast('positions', store.get().openPositions);
-      broadcast('metrics',   buildMetrics());
-    }
+    broadcast('positions', store.get().openPositions);
+    broadcast('metrics',   buildMetrics());
 
-    // also remove bot positions that no longer exist in Tradier
-    const tradierSyms = tradierPositions.map(p => p.symbol);
-    const stale = store.get().openPositions.filter(p =>
-      p.orderStatus === 'filled' &&
-      p.optionSymbol &&
-      !tradierSyms.includes(p.optionSymbol)
-    );
-    if (stale.length) {
-      log(`Removing ${stale.length} stale position(s) not found in Tradier`, 'scan');
-      stale.forEach(p => store.update('openPositions', arr => arr.filter(x => x.id !== p.id)));
-      broadcast('positions', store.get().openPositions);
-      broadcast('metrics',   buildMetrics());
-    }
+    const total = store.get().openPositions.filter(p => p.orderStatus === 'filled').length;
+    log(`Position sync complete — ${total} position(s) match Tradier`, 'scan');
 
   } catch(e) {
     log(`External position sync error: ${e.message}`, 'err');
