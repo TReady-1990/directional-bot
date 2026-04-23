@@ -88,6 +88,13 @@ app.post('/api/positions/sync',  async (req, res) => {
   await trader.syncExternalPositions();
   res.json({ ok: true, positions: store.get().openPositions.length });
 });
+
+// Emergency clear — wipes all open positions then syncs from Tradier
+app.post('/api/positions/reset', async (req, res) => {
+  store.set('openPositions', []);
+  await trader.syncExternalPositions();
+  res.json({ ok: true, positions: store.get().openPositions.length, message: 'Positions cleared and resynced from Tradier' });
+});
 app.post('/api/positions/close/:id', async (req, res) => {
   const qty = req.body?.quantity || null;
   await trader.exitTrade(parseInt(req.params.id), 'manual', qty);
