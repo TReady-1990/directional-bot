@@ -890,6 +890,7 @@ async function syncExternalPositions() {
     const tradierSyms = tradierPositions.map(tp => tp.symbol);
 
     // ── Step 1: remove bot positions not in Tradier ───────────────────────────
+    // Only remove FILLED positions — keep pending/closing orders as-is
     const toRemove = openPositions.filter(p =>
       p.orderStatus === 'filled' &&
       p.optionSymbol &&
@@ -914,9 +915,12 @@ async function syncExternalPositions() {
       const expiry    = `20${expStr.slice(0,2)}-${expStr.slice(2,4)}-${expStr.slice(4,6)}`;
       const qty       = Math.abs(parseInt(tp.quantity || 1));
 
-      // cost_basis from Tradier is total cost — divide by qty and 100 for per-share
+      // cost_basis from Tradier is total dollars (e.g. $1818.75 for 3 contracts)
+      // per-share price = total_cost / qty / 100
       const totalCost = parseFloat(tp.cost_basis || 0);
       const costBasis = qty > 0 ? +(totalCost / qty / 100).toFixed(2) : 0;
+      // also store total cost for accurate P&L matching with Tradier
+      const totalCostBasis = +totalCost.toFixed(2);
 
       // get current market quote
       let currValue = costBasis;
@@ -955,6 +959,7 @@ async function syncExternalPositions() {
           expiry,
           dte:           daysToExp,
           costBasis,
+          totalCostBasis,
           currValue,
           peakValue:     currValue,
           quantity:      qty,

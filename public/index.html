@@ -706,6 +706,9 @@ function renderPositions() {
     container.innerHTML = list.map(p => {
       const pnl    = +(p.currValue - p.costBasis).toFixed(2);
       const pnlPct = p.costBasis ? +((pnl / p.costBasis) * 100).toFixed(1) : 0;
+      // total P&L in dollars (qty × 100 shares per contract)
+      const totalPnlDollar = +(pnl * (p.quantity || 1) * 100).toFixed(0);
+      const totalCostDollar = p.totalCostBasis || +(p.costBasis * (p.quantity || 1) * 100).toFixed(0);
       const cls    = pnl >= 0 ? 'pos' : 'neg';
       const sign   = pnl >= 0 ? '+' : '';
       const srcBadge = p.source === 'auto' ? '<span class="pos-badge badge-auto">AUTO</span>' : p.source === 'external' ? '<span class="pos-badge badge-external">EXT</span>' : '<span style="font-size:10px;color:var(--muted)">manual</span>';
@@ -731,7 +734,11 @@ function renderPositions() {
           <div class="pos-item"><div class="pos-item-label">QTY</div><div class="pos-item-val">${p.quantity || 1}${p.partialClosed ? ' (partial)' : ''}</div></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <div><div class="pos-pnl ${cls}">${sign}$${Math.abs(pnl * 100).toFixed(0)}<span style="font-size:12px;"> /contract</span></div><div style="font-size:12px;" class="${cls}">${sign}${pnlPct}%</div></div>
+          <div>
+            <div class="pos-pnl ${cls}">${sign}$${Math.abs(totalPnlDollar)}<span style="font-size:12px;"> total</span></div>
+            <div style="font-size:12px;" class="${cls}">${sign}${pnlPct}% · $${Math.abs(pnl).toFixed(2)}/contract</div>
+            <div style="font-size:11px;color:var(--muted);">Cost $${totalCostDollar}</div>
+          </div>
           ${p.orderStatus === 'pending'
             ? `<button class="btn btn-danger" onclick="closePosition(${p.id},1)">Cancel</button>`
             : p.orderStatus === 'closing' || p.orderStatus === 'closing-partial'
