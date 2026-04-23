@@ -232,9 +232,7 @@ app.post('/api/backtest/optimize', async (req, res) => {
     backtestRunning = false;
   }
 });
-
 app.get('/api/backtest/progress', (req, res) => res.json(backtestProgress));
-});
 app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime(), time: new Date().toISOString() }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
