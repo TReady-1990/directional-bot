@@ -907,7 +907,7 @@ function recordTradeForLearning(trade) {
     pnl: trade.pnl, pnlPct: trade.pnlPct, closeReason: trade.closeReason,
     snapshot: trade.entrySnapshot, closedAt: Date.now(),
     costBasis: trade.costBasis, closePrice: trade.closePrice, entryPrice: trade.entryPrice,
-  }, ...arr.slice(0, 1999)]);  // keep last 2000 trades
+  }, ...arr.slice(0, 199)]);
 
   const { tradeMemory } = store.get();
 
@@ -1056,5 +1056,3 @@ module.exports = {
   signals, priceCache, cooldownMap, liveAccountCache,
   checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };
-
-
