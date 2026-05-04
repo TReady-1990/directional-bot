@@ -776,43 +776,26 @@ async function checkFillsAndRisk() {
     } catch(e) { log(`Fill check error ${p.sym}: ${e.message}`, 'err'); }
   }
 
-  // 2 — update live quotes for all active positions (filled, closing, external)
-  const activeStatuses = ['filled', 'closing', 'closing-partial'];
-  const active = store.get().openPositions.filter(p =>
-    activeStatuses.includes(p.orderStatus) &&
-    p.optionSymbol &&
-    !p.optionSymbol.includes('SIM')
-  );
-  if (active.length) {
+  // 2 — update live quotes
+  const filled = store.get().openPositions.filter(p => p.orderStatus === 'filled' && !p.optionSymbol?.includes('SIM'));
+  if (filled.length) {
     try {
-      // batch in groups of 10 to avoid URL length limits
-      const batches = [];
-      for (let i = 0; i < active.length; i += 10) batches.push(active.slice(i, i + 10));
-      const allQuotes = [];
-      for (const batch of batches) {
-        const syms  = batch.map(p => p.optionSymbol).join(',');
-        const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${syms}`, { headers: prodHeaders() });
-        const qData = await qRes.json();
-        const rawQ  = qData?.quotes?.quote;
-        if (rawQ) allQuotes.push(...(Array.isArray(rawQ) ? rawQ : [rawQ]));
-      }
+      const syms  = filled.map(p => p.optionSymbol).join(',');
+      const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${syms}`, { headers: prodHeaders() });
+      const qData = await qRes.json();
+      const rawQ  = qData?.quotes?.quote;
+      const quotes = !rawQ ? [] : (Array.isArray(rawQ) ? rawQ : [rawQ]);
       store.update('openPositions', arr => arr.map(pos => {
-        const q = allQuotes.find(x => x.symbol === pos.optionSymbol);
-        if (!q || !activeStatuses.includes(pos.orderStatus)) return pos;
-        // use last price if bid/ask spread is unavailable or zero
-        let mid = pos.currValue;
-        if (q.bid != null && q.ask != null && (q.bid + q.ask) > 0) {
-          mid = (parseFloat(q.bid) + parseFloat(q.ask)) / 2;
-        } else if (q.last && parseFloat(q.last) > 0) {
-          mid = parseFloat(q.last);
-        }
+        const q = quotes.find(x => x.symbol === pos.optionSymbol);
+        if (!q || pos.orderStatus !== 'filled') return pos;
+        const mid  = q.bid != null && q.ask != null ? (q.bid + q.ask) / 2 : (q.last || pos.currValue);
         const curr = +mid.toFixed(2);
         const peak = curr > (pos.peakValue || pos.costBasis) ? curr : (pos.peakValue || pos.costBasis);
         return { ...pos, currValue: curr, peakValue: peak, dte: q.days_to_expiration ?? pos.dte };
       }));
       broadcast('positions', store.get().openPositions);
       broadcast('metrics',   buildMetrics());
-    } catch(e) { log(`Quote update error: ${e.message}`, 'err'); }
+    } catch(e) { /* keep last values */ }
   }
 
   // 3 — risk checks (skip positions already being closed)
@@ -867,145 +850,6 @@ async function syncAccount() {
   // force refresh the risk cache and return the result
   liveAccountCache.lastFetched = 0;
   return await fetchAccountForRisk();
-}
-
-// ── External position sync ───────────────────────────────────────────────────
-// Tradier is the source of truth. This function rebuilds bot positions
-// to exactly match what Tradier shows — adding missing, updating existing,
-// removing stale. Called on startup and every 5 minutes.
-async function syncExternalPositions() {
-  try {
-    const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/positions`, { headers: paperHeaders() });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); } catch(e) {
-      log(`Position sync parse error: ${text.slice(0,80)}`, 'err'); return;
-    }
-
-    const raw = data?.positions?.position;
-
-    // no positions in Tradier — clear all filled bot positions
-    if (!raw) {
-      const { openPositions } = store.get();
-      const filled = openPositions.filter(p => p.orderStatus === 'filled');
-      if (filled.length) {
-        log(`Tradier shows 0 positions — clearing ${filled.length} stale bot position(s)`, 'scan');
-        store.set('openPositions', openPositions.filter(p => p.orderStatus !== 'filled'));
-        broadcast('positions', store.get().openPositions);
-        broadcast('metrics',   buildMetrics());
-      }
-      return;
-    }
-
-    const tradierPositions = (Array.isArray(raw) ? raw : [raw])
-      .filter(tp => {
-        const s = tp.symbol || '';
-        return /^[A-Z]+\d{6}[CP]\d{8}$/.test(s); // options only
-      });
-
-    const { openPositions } = store.get();
-    const tradierSyms = tradierPositions.map(tp => tp.symbol);
-    const now = Date.now();
-
-    // ── Step 1: rebuild from Tradier ──────────────────────────────────────────
-    // Keep only recent pending bot orders (< 10 min old) — everything else
-    // gets replaced by what Tradier actually shows
-    const keepPending = openPositions.filter(p => {
-      if (p.orderStatus !== 'pending') return false;
-      const age = now - (p.openedAtMs || now);
-      return age < 10 * 60 * 1000; // keep pending orders less than 10 min old
-    });
-
-    // Clear all non-pending positions — we'll rebuild from Tradier
-    store.set('openPositions', keepPending);
-
-    const toRemove = [];  // already handled above
-
-    // ── Step 2: add or update positions from Tradier ──────────────────────────
-    let changed = 0;
-    for (const tp of tradierPositions) {
-      const sym = tp.symbol;
-      const m   = sym.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
-      if (!m) continue;
-
-      const ticker    = m[1];
-      const direction = m[3] === 'C' ? 'call' : 'put';
-      const strike    = parseInt(m[4]) / 1000;
-      const expStr    = m[2];
-      const expiry    = `20${expStr.slice(0,2)}-${expStr.slice(2,4)}-${expStr.slice(4,6)}`;
-      const qty       = Math.abs(parseInt(tp.quantity || 1));
-
-      // cost_basis from Tradier is total dollars (e.g. $1818.75 for 3 contracts)
-      // per-share price = total_cost / qty / 100
-      const totalCost = parseFloat(tp.cost_basis || 0);
-      const costBasis = qty > 0 ? +(totalCost / qty / 100).toFixed(2) : 0;
-      // also store total cost for accurate P&L matching with Tradier
-      const totalCostBasis = +totalCost.toFixed(2);
-
-      // get current market quote
-      let currValue = costBasis;
-      try {
-        const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${sym}`, { headers: prodHeaders() });
-        const qData = await qRes.json();
-        const q     = qData?.quotes?.quote;
-        if (q && q.bid != null && q.ask != null) {
-          const mid = (parseFloat(q.bid) + parseFloat(q.ask)) / 2;
-          if (mid > 0) currValue = +mid.toFixed(2);
-        } else if (q && q.last) {
-          currValue = +parseFloat(q.last).toFixed(2);
-        }
-      } catch(e) { /* keep costBasis */ }
-
-      const daysToExp = Math.max(0, Math.ceil((new Date(expiry) - getETTime()) / (1000 * 60 * 60 * 24)));
-
-      // check if already tracked — update if so, add if not
-      const existing = store.get().openPositions.find(p => p.optionSymbol === sym);
-      if (existing) {
-        // update quantity and current value to match Tradier
-        store.update('openPositions', arr => arr.map(p => p.optionSymbol === sym
-          ? { ...p, quantity: qty, currValue, dte: daysToExp,
-              peakValue: currValue > p.peakValue ? currValue : p.peakValue }
-          : p));
-      } else {
-        // new position — import from Tradier
-        const pos = {
-          id:            Date.now() + changed,
-          sym:           ticker,
-          direction,
-          optionSymbol:  sym,
-          orderId:       null,
-          orderStatus:   'filled',
-          strike,
-          expiry,
-          dte:           daysToExp,
-          costBasis,
-          totalCostBasis,
-          currValue,
-          peakValue:     currValue,
-          quantity:      qty,
-          partialClosed: false,
-          entryPrice:    priceCache[ticker]?.price || 0,
-          source:        'external',
-          openedAt:      etLocaleTime(),
-          openedAtMs:    Date.now(),
-          entrySnapshot: {},
-          limitPrice:    costBasis,
-        };
-        store.update('openPositions', arr => [...arr, pos]);
-        log(`Synced from Tradier: ${ticker} ${direction.toUpperCase()} x${qty} @ $${costBasis} (exp ${expiry})`, 'order');
-        changed++;
-      }
-    }
-
-    broadcast('positions', store.get().openPositions);
-    broadcast('metrics',   buildMetrics());
-
-    const total = store.get().openPositions.filter(p => p.orderStatus === 'filled').length;
-    log(`Position sync complete — ${total} position(s) match Tradier`, 'scan');
-
-  } catch(e) {
-    log(`External position sync error: ${e.message}`, 'err');
-  }
 }
 
 // ── Main scan loop ────────────────────────────────────────────────────────────
@@ -1063,7 +907,7 @@ function recordTradeForLearning(trade) {
     pnl: trade.pnl, pnlPct: trade.pnlPct, closeReason: trade.closeReason,
     snapshot: trade.entrySnapshot, closedAt: Date.now(),
     costBasis: trade.costBasis, closePrice: trade.closePrice, entryPrice: trade.entryPrice,
-  }, ...arr.slice(0, 1999)]);  // keep last 2000 trades
+  }, ...arr.slice(0, 199)]);
 
   const { tradeMemory } = store.get();
 
@@ -1084,30 +928,7 @@ function recordTradeForLearning(trade) {
 }
 
 function runLearningCycle() {
-  const { tradeMemory: tm, closedPositions, learnedThresholds } = store.get();
-
-  // Build combined dataset — tradeMemory has full snapshots, closedPositions
-  // has the full history. Use closedPositions as supplement when it has more data.
-  const closedAsTrades = closedPositions
-    .filter(p => p.win !== undefined && p.pnl !== undefined)
-    .map(p => ({
-      sym:         p.sym,
-      direction:   p.direction,
-      win:         p.win,
-      pnl:         p.pnl,
-      pnlPct:      p.pnlPct,
-      closeReason: p.closeReason,
-      snapshot:    p.entrySnapshot || {},
-      closedAt:    p.closedAt,
-      costBasis:   p.costBasis,
-      closePrice:  p.closePrice,
-    }));
-
-  // prefer tradeMemory (has snapshots), supplement with closedPositions
-  const tradeMemory = tm.length >= closedAsTrades.length
-    ? tm
-    : closedAsTrades;
-
+  const { tradeMemory, learnedThresholds } = store.get();
   if (tradeMemory.length < 5) return;
 
   const thresh = { ...learnedThresholds };
@@ -1178,7 +999,6 @@ function start() {
   fillInterval    = setInterval(checkFillsAndRisk, 30000);
   priceInterval   = setInterval(async () => { await fetchPrices(); generateSignals(); }, 10000);
   accountInterval = setInterval(syncAccount,   60000);
-  setInterval(syncExternalPositions, 5 * 60 * 1000); // sync external positions every 5 min
   log(`Bot started — scanning ${store.get().watchlist.length} tickers every ${store.getSetting('scanInterval') || 60}s`, 'order');
   broadcast('status', { autoEnabled: true, marketOpen: isMarketOpen() });
   // run immediately
@@ -1218,38 +1038,9 @@ function getStatus() {
 // resume auto if it was running before restart
 function init() {
   store.load();
-
-  // ── Startup cleanup — purge stale positions from previous sessions ──────────
-  // Remove any positions that are in an unresolvable state:
-  // - 'closing' or 'closing-partial' older than 2 hours (close order never confirmed)
-  // - 'pending' older than 30 minutes (buy order never filled)
-  const now = Date.now();
-  const { openPositions } = store.get();
-  const cleaned = openPositions.filter(p => {
-    const age = now - (p.openedAtMs || now);
-    if (p.orderStatus === 'closing' || p.orderStatus === 'closing-partial') {
-      const closingAge = now - (p.closingAt || p.openedAtMs || now);
-      if (closingAge > 2 * 60 * 60 * 1000) {
-        console.log(`[init] Purging stale closing position: ${p.sym} #${p.closeOrderId} (${Math.round(closingAge/3600000)}h old)`);
-        return false;
-      }
-    }
-    if (p.orderStatus === 'pending' && age > 30 * 60 * 1000) {
-      console.log(`[init] Purging stale pending position: ${p.sym} #${p.orderId} (${Math.round(age/60000)}min old)`);
-      return false;
-    }
-    return true;
-  });
-
-  if (cleaned.length !== openPositions.length) {
-    console.log(`[init] Purged ${openPositions.length - cleaned.length} stale position(s)`);
-    store.set('openPositions', cleaned);
-  }
-
   fetchPrices().then(async () => {
     await prefetchRSI(store.get().watchlist);
     generateSignals();
-    syncExternalPositions(); // reconcile with Tradier on startup
   });
   syncAccount();
   if (store.get().autoEnabled) {
@@ -1261,7 +1052,7 @@ function init() {
 
 module.exports = {
   init, start, stop, getStatus, emitter, buildMetrics,
-  enterTrade, exitTrade, syncAccount, syncExternalPositions, runScan, runLearningCycle,
+  enterTrade, exitTrade, syncAccount, runScan, runLearningCycle,
   signals, priceCache, cooldownMap, liveAccountCache,
   checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };

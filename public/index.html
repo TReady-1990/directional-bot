@@ -298,12 +298,9 @@
 </div>
 
 <div class="page" id="page-positions">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-    <div class="subtabs" style="margin-bottom:0;">
-      <button class="subtab active" onclick="switchSubtab('open',this)">Open</button>
-      <button class="subtab" onclick="switchSubtab('closed',this)">Closed</button>
-    </div>
-    <button class="btn" onclick="syncPositions()" id="sync-pos-btn" style="font-size:11px;">⟳ Sync Tradier</button>
+  <div class="subtabs">
+    <button class="subtab active" onclick="switchSubtab('open',this)">Open</button>
+    <button class="subtab" onclick="switchSubtab('closed',this)">Closed</button>
   </div>
   <div id="positions-container"><div class="empty">No open positions</div></div>
 </div>
@@ -640,7 +637,6 @@ function renderMetrics(m) {
   set('m-realized-sub', m.total + ' closed');
   set('m-wr', m.wr !== null ? m.wr + '%' : '—');
   set('m-wr-sub', m.total ? `${m.wins}/${m.total} trades` : 'no closed trades');
-  if (m.autoCount != null) set('m-auto', m.autoCount);
 }
 
 function renderAccount(a) {
@@ -706,9 +702,6 @@ function renderPositions() {
     container.innerHTML = list.map(p => {
       const pnl    = +(p.currValue - p.costBasis).toFixed(2);
       const pnlPct = p.costBasis ? +((pnl / p.costBasis) * 100).toFixed(1) : 0;
-      // total P&L in dollars (qty × 100 shares per contract)
-      const totalPnlDollar = +(pnl * (p.quantity || 1) * 100).toFixed(0);
-      const totalCostDollar = p.totalCostBasis || +(p.costBasis * (p.quantity || 1) * 100).toFixed(0);
       const cls    = pnl >= 0 ? 'pos' : 'neg';
       const sign   = pnl >= 0 ? '+' : '';
       const srcBadge = p.source === 'auto' ? '<span class="pos-badge badge-auto">AUTO</span>' : p.source === 'external' ? '<span class="pos-badge badge-external">EXT</span>' : '<span style="font-size:10px;color:var(--muted)">manual</span>';
@@ -734,11 +727,7 @@ function renderPositions() {
           <div class="pos-item"><div class="pos-item-label">QTY</div><div class="pos-item-val">${p.quantity || 1}${p.partialClosed ? ' (partial)' : ''}</div></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <div>
-            <div class="pos-pnl ${cls}">${sign}$${Math.abs(totalPnlDollar)}<span style="font-size:12px;"> total</span></div>
-            <div style="font-size:12px;" class="${cls}">${sign}${pnlPct}% · $${Math.abs(pnl).toFixed(2)}/contract</div>
-            <div style="font-size:11px;color:var(--muted);">Cost $${totalCostDollar}</div>
-          </div>
+          <div><div class="pos-pnl ${cls}">${sign}$${Math.abs(pnl * 100).toFixed(0)}<span style="font-size:12px;"> /contract</span></div><div style="font-size:12px;" class="${cls}">${sign}${pnlPct}%</div></div>
           ${p.orderStatus === 'pending'
             ? `<button class="btn btn-danger" onclick="closePosition(${p.id},1)">Cancel</button>`
             : p.orderStatus === 'closing' || p.orderStatus === 'closing-partial'
@@ -812,9 +801,7 @@ function renderWatchlist() {
 }
 
 function renderLearning() {
-  const { tradeMemory: tm, closedPositions, learnedThresholds: lt, adaptationCount } = state;
-  // use whichever dataset is larger
-  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
+  const { tradeMemory, learnedThresholds: lt, adaptationCount } = state;
   const wins = tradeMemory.filter(t => t.win).length;
   const wr   = tradeMemory.length ? Math.round(wins / tradeMemory.length * 100) : null;
   const set  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -973,19 +960,6 @@ async function syncAccount() {
   const res  = await fetch('/api/account/sync', { method: 'POST' });
   const data = await res.json();
   if (data.account) renderAccount(data.account);
-}
-
-async function syncPositions() {
-  const btn = document.getElementById('sync-pos-btn');
-  if (btn) btn.textContent = '⟳ Syncing...';
-  try {
-    const res = await fetch('/api/positions/sync', { method: 'POST' });
-    const d   = await res.json();
-    if (btn) btn.textContent = `⟳ Sync (${d.positions})`;
-    setTimeout(() => { if (btn) btn.textContent = '⟳ Sync'; }, 3000);
-  } catch(e) {
-    if (btn) btn.textContent = '⟳ Sync';
-  }
 }
 
 async function closePosition(id, qty) {
