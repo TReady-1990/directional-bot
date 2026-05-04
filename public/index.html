@@ -812,7 +812,9 @@ function renderWatchlist() {
 }
 
 function renderLearning() {
-  const { tradeMemory, learnedThresholds: lt, adaptationCount } = state;
+  const { tradeMemory: tm, closedPositions, learnedThresholds: lt, adaptationCount } = state;
+  // use whichever dataset is larger
+  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
   const wins = tradeMemory.filter(t => t.win).length;
   const wr   = tradeMemory.length ? Math.round(wins / tradeMemory.length * 100) : null;
   const set  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };

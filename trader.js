@@ -905,18 +905,21 @@ async function syncExternalPositions() {
 
     const { openPositions } = store.get();
     const tradierSyms = tradierPositions.map(tp => tp.symbol);
+    const now = Date.now();
 
-    // ── Step 1: remove bot positions not in Tradier ───────────────────────────
-    // Only remove FILLED positions — keep pending/closing orders as-is
-    const toRemove = openPositions.filter(p =>
-      p.orderStatus === 'filled' &&
-      p.optionSymbol &&
-      !tradierSyms.includes(p.optionSymbol)
-    );
-    if (toRemove.length) {
-      log(`Removing ${toRemove.length} position(s) no longer in Tradier`, 'scan');
-      toRemove.forEach(p => store.update('openPositions', arr => arr.filter(x => x.id !== p.id)));
-    }
+    // ── Step 1: rebuild from Tradier ──────────────────────────────────────────
+    // Keep only recent pending bot orders (< 10 min old) — everything else
+    // gets replaced by what Tradier actually shows
+    const keepPending = openPositions.filter(p => {
+      if (p.orderStatus !== 'pending') return false;
+      const age = now - (p.openedAtMs || now);
+      return age < 10 * 60 * 1000; // keep pending orders less than 10 min old
+    });
+
+    // Clear all non-pending positions — we'll rebuild from Tradier
+    store.set('openPositions', keepPending);
+
+    const toRemove = [];  // already handled above
 
     // ── Step 2: add or update positions from Tradier ──────────────────────────
     let changed = 0;
@@ -1060,7 +1063,7 @@ function recordTradeForLearning(trade) {
     pnl: trade.pnl, pnlPct: trade.pnlPct, closeReason: trade.closeReason,
     snapshot: trade.entrySnapshot, closedAt: Date.now(),
     costBasis: trade.costBasis, closePrice: trade.closePrice, entryPrice: trade.entryPrice,
-  }, ...arr.slice(0, 199)]);
+  }, ...arr.slice(0, 1999)]);  // keep last 2000 trades
 
   const { tradeMemory } = store.get();
 
@@ -1081,7 +1084,30 @@ function recordTradeForLearning(trade) {
 }
 
 function runLearningCycle() {
-  const { tradeMemory, learnedThresholds } = store.get();
+  const { tradeMemory: tm, closedPositions, learnedThresholds } = store.get();
+
+  // Build combined dataset — tradeMemory has full snapshots, closedPositions
+  // has the full history. Use closedPositions as supplement when it has more data.
+  const closedAsTrades = closedPositions
+    .filter(p => p.win !== undefined && p.pnl !== undefined)
+    .map(p => ({
+      sym:         p.sym,
+      direction:   p.direction,
+      win:         p.win,
+      pnl:         p.pnl,
+      pnlPct:      p.pnlPct,
+      closeReason: p.closeReason,
+      snapshot:    p.entrySnapshot || {},
+      closedAt:    p.closedAt,
+      costBasis:   p.costBasis,
+      closePrice:  p.closePrice,
+    }));
+
+  // prefer tradeMemory (has snapshots), supplement with closedPositions
+  const tradeMemory = tm.length >= closedAsTrades.length
+    ? tm
+    : closedAsTrades;
+
   if (tradeMemory.length < 5) return;
 
   const thresh = { ...learnedThresholds };
@@ -1192,10 +1218,38 @@ function getStatus() {
 // resume auto if it was running before restart
 function init() {
   store.load();
+
+  // ── Startup cleanup — purge stale positions from previous sessions ──────────
+  // Remove any positions that are in an unresolvable state:
+  // - 'closing' or 'closing-partial' older than 2 hours (close order never confirmed)
+  // - 'pending' older than 30 minutes (buy order never filled)
+  const now = Date.now();
+  const { openPositions } = store.get();
+  const cleaned = openPositions.filter(p => {
+    const age = now - (p.openedAtMs || now);
+    if (p.orderStatus === 'closing' || p.orderStatus === 'closing-partial') {
+      const closingAge = now - (p.closingAt || p.openedAtMs || now);
+      if (closingAge > 2 * 60 * 60 * 1000) {
+        console.log(`[init] Purging stale closing position: ${p.sym} #${p.closeOrderId} (${Math.round(closingAge/3600000)}h old)`);
+        return false;
+      }
+    }
+    if (p.orderStatus === 'pending' && age > 30 * 60 * 1000) {
+      console.log(`[init] Purging stale pending position: ${p.sym} #${p.orderId} (${Math.round(age/60000)}min old)`);
+      return false;
+    }
+    return true;
+  });
+
+  if (cleaned.length !== openPositions.length) {
+    console.log(`[init] Purged ${openPositions.length - cleaned.length} stale position(s)`);
+    store.set('openPositions', cleaned);
+  }
+
   fetchPrices().then(async () => {
     await prefetchRSI(store.get().watchlist);
     generateSignals();
-    syncExternalPositions(); // import any existing Tradier positions on startup
+    syncExternalPositions(); // reconcile with Tradier on startup
   });
   syncAccount();
   if (store.get().autoEnabled) {
