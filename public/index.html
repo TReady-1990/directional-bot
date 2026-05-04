@@ -569,6 +569,7 @@ function handleMessage(type, data) {
       state.learnedThresholds= data.learnedThresholds|| {};
       state.adaptationCount  = data.adaptationCount  || 0;
       state.tradeMemory      = data.tradeMemory      || [];
+      state.closedPositions  = data.closedPositions  || state.closedPositions || [];
       if (data.prices) { priceCache = data.prices; renderTickerStrip(); }
       applySettings(state.settings);
       renderAll(data.status, data.metrics, data.account);
