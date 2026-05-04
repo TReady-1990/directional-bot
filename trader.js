@@ -94,7 +94,6 @@ async function fetchPrices() {
         chgPct:   q.change_percentage || 0,
         volume:   q.volume || 0,
         avgVol:   q.average_volume || q.volume || 1,
-        live:     true,
       };
     });
     broadcast('prices', priceCache);
@@ -908,7 +907,7 @@ function recordTradeForLearning(trade) {
     pnl: trade.pnl, pnlPct: trade.pnlPct, closeReason: trade.closeReason,
     snapshot: trade.entrySnapshot, closedAt: Date.now(),
     costBasis: trade.costBasis, closePrice: trade.closePrice, entryPrice: trade.entryPrice,
-  }, ...arr.slice(0, 1999)]);  // keep last 2000 trades
+  }, ...arr.slice(0, 199)]);
 
   const { tradeMemory } = store.get();
 
@@ -929,8 +928,7 @@ function recordTradeForLearning(trade) {
 }
 
 function runLearningCycle() {
-  const { tradeMemory: tm, closedPositions, learnedThresholds } = store.get();
-  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
+  const { tradeMemory, learnedThresholds } = store.get();
   if (tradeMemory.length < 5) return;
 
   const thresh = { ...learnedThresholds };
@@ -1058,6 +1056,3 @@ module.exports = {
   signals, priceCache, cooldownMap, liveAccountCache,
   checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };
-
-
-

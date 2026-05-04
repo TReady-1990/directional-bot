@@ -569,7 +569,6 @@ function handleMessage(type, data) {
       state.learnedThresholds= data.learnedThresholds|| {};
       state.adaptationCount  = data.adaptationCount  || 0;
       state.tradeMemory      = data.tradeMemory      || [];
-      state.closedPositions  = data.closedPositions  || state.closedPositions || [];
       if (data.prices) { priceCache = data.prices; renderTickerStrip(); }
       applySettings(state.settings);
       renderAll(data.status, data.metrics, data.account);
@@ -802,8 +801,7 @@ function renderWatchlist() {
 }
 
 function renderLearning() {
-  const { tradeMemory: tm, closedPositions, learnedThresholds: lt, adaptationCount } = state;
-  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
+  const { tradeMemory, learnedThresholds: lt, adaptationCount } = state;
   const wins = tradeMemory.filter(t => t.win).length;
   const wr   = tradeMemory.length ? Math.round(wins / tradeMemory.length * 100) : null;
   const set  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -1237,4 +1235,3 @@ connectWS();
 </script>
 </body>
 </html>
-
