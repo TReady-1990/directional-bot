@@ -94,6 +94,7 @@ async function fetchPrices() {
         chgPct:   q.change_percentage || 0,
         volume:   q.volume || 0,
         avgVol:   q.average_volume || q.volume || 1,
+        live:     true,
       };
     });
     broadcast('prices', priceCache);
@@ -788,10 +789,23 @@ async function checkFillsAndRisk() {
       store.update('openPositions', arr => arr.map(pos => {
         const q = quotes.find(x => x.symbol === pos.optionSymbol);
         if (!q || pos.orderStatus !== 'filled') return pos;
-        const mid  = q.bid != null && q.ask != null ? (q.bid + q.ask) / 2 : (q.last || pos.currValue);
-        const curr = +mid.toFixed(2);
-        const peak = curr > (pos.peakValue || pos.costBasis) ? curr : (pos.peakValue || pos.costBasis);
-        return { ...pos, currValue: curr, peakValue: peak, dte: q.days_to_expiration ?? pos.dte };
+        const bid  = q.bid  != null ? +parseFloat(q.bid).toFixed(2)  : null;
+        const ask  = q.ask  != null ? +parseFloat(q.ask).toFixed(2)  : null;
+        const mid  = bid != null && ask != null ? +((bid + ask) / 2).toFixed(2) : (q.last || pos.currValue);
+        const last = q.last ? +parseFloat(q.last).toFixed(2) : mid;
+        // use BID for exit decisions — this is what you actually get when selling
+        const exitValue = bid != null && bid > 0 ? bid : mid;
+        const peak = exitValue > (pos.peakValue || pos.costBasis) ? exitValue : (pos.peakValue || pos.costBasis);
+        return {
+          ...pos,
+          currValue:  exitValue,  // bid price — used for exit triggers
+          midValue:   mid,        // mid price — shown alongside bid in UI
+          bidValue:   bid,        // raw bid
+          askValue:   ask,        // raw ask
+          lastValue:  last,       // last trade price
+          peakValue:  peak,
+          dte:        q.days_to_expiration ?? pos.dte,
+        };
       }));
       broadcast('positions', store.get().openPositions);
       broadcast('metrics',   buildMetrics());
@@ -907,7 +921,7 @@ function recordTradeForLearning(trade) {
     pnl: trade.pnl, pnlPct: trade.pnlPct, closeReason: trade.closeReason,
     snapshot: trade.entrySnapshot, closedAt: Date.now(),
     costBasis: trade.costBasis, closePrice: trade.closePrice, entryPrice: trade.entryPrice,
-  }, ...arr.slice(0, 199)]);
+  }, ...arr.slice(0, 1999)]);  // keep last 2000 trades
 
   const { tradeMemory } = store.get();
 
@@ -928,7 +942,8 @@ function recordTradeForLearning(trade) {
 }
 
 function runLearningCycle() {
-  const { tradeMemory, learnedThresholds } = store.get();
+  const { tradeMemory: tm, closedPositions, learnedThresholds } = store.get();
+  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
   if (tradeMemory.length < 5) return;
 
   const thresh = { ...learnedThresholds };
@@ -1056,3 +1071,6 @@ module.exports = {
   signals, priceCache, cooldownMap, liveAccountCache,
   checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };
+
+
+

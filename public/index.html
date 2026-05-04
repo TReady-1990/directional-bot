@@ -569,6 +569,7 @@ function handleMessage(type, data) {
       state.learnedThresholds= data.learnedThresholds|| {};
       state.adaptationCount  = data.adaptationCount  || 0;
       state.tradeMemory      = data.tradeMemory      || [];
+      state.closedPositions  = data.closedPositions  || state.closedPositions || [];
       if (data.prices) { priceCache = data.prices; renderTickerStrip(); }
       applySettings(state.settings);
       renderAll(data.status, data.metrics, data.account);
@@ -700,10 +701,17 @@ function renderPositions() {
 
   if (currentTab === 'open') {
     container.innerHTML = list.map(p => {
-      const pnl    = +(p.currValue - p.costBasis).toFixed(2);
+      // currValue = bid (used for exit triggers)
+      // midValue  = mid (theoretical fair value)
+      const bid    = p.bidValue  ?? p.currValue;
+      const mid    = p.midValue  ?? p.currValue;
+      const ask    = p.askValue  ?? p.currValue;
+      const pnl    = +(bid - p.costBasis).toFixed(2);
       const pnlPct = p.costBasis ? +((pnl / p.costBasis) * 100).toFixed(1) : 0;
+      const midPnlPct = p.costBasis ? +(((mid - p.costBasis) / p.costBasis) * 100).toFixed(1) : 0;
       const cls    = pnl >= 0 ? 'pos' : 'neg';
       const sign   = pnl >= 0 ? '+' : '';
+      const totalPnlDollar = +(pnl * (p.quantity || 1) * 100).toFixed(0);
       const srcBadge = p.source === 'auto' ? '<span class="pos-badge badge-auto">AUTO</span>' : p.source === 'external' ? '<span class="pos-badge badge-external">EXT</span>' : '<span style="font-size:10px;color:var(--muted)">manual</span>';
       const statusBadge = p.orderStatus === 'pending'          ? '<span class="pos-badge badge-pending">PENDING</span>'
         : p.orderStatus === 'closing' || p.orderStatus === 'closing-partial'
@@ -727,7 +735,10 @@ function renderPositions() {
           <div class="pos-item"><div class="pos-item-label">QTY</div><div class="pos-item-val">${p.quantity || 1}${p.partialClosed ? ' (partial)' : ''}</div></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <div><div class="pos-pnl ${cls}">${sign}$${Math.abs(pnl * 100).toFixed(0)}<span style="font-size:12px;"> /contract</span></div><div style="font-size:12px;" class="${cls}">${sign}${pnlPct}%</div></div>
+          <div><div class="pos-pnl ${cls}">${sign}$${Math.abs(totalPnlDollar)}<span style="font-size:12px;"> total</span></div>
+            <div style="font-size:12px;" class="${cls}">${sign}${pnlPct}% at bid &middot; mid ${midPnlPct >= 0 ? '+' : ''}${midPnlPct}%</div>
+            <div style="font-size:11px;color:var(--muted);">Bid $${bid.toFixed(2)} &middot; Mid $${mid.toFixed(2)} &middot; Ask $${ask.toFixed(2)}</div>
+            <div style="font-size:11px;color:var(--muted);">Cost $${p.costBasis?.toFixed(2)} &times; ${p.quantity || 1}</div></div>
           ${p.orderStatus === 'pending'
             ? `<button class="btn btn-danger" onclick="closePosition(${p.id},1)">Cancel</button>`
             : p.orderStatus === 'closing' || p.orderStatus === 'closing-partial'
@@ -801,7 +812,8 @@ function renderWatchlist() {
 }
 
 function renderLearning() {
-  const { tradeMemory, learnedThresholds: lt, adaptationCount } = state;
+  const { tradeMemory: tm, closedPositions, learnedThresholds: lt, adaptationCount } = state;
+  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
   const wins = tradeMemory.filter(t => t.win).length;
   const wr   = tradeMemory.length ? Math.round(wins / tradeMemory.length * 100) : null;
   const set  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -1235,3 +1247,4 @@ connectWS();
 </script>
 </body>
 </html>
+
