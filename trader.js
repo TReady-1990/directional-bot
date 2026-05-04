@@ -94,7 +94,6 @@ async function fetchPrices() {
         chgPct:   q.change_percentage || 0,
         volume:   q.volume || 0,
         avgVol:   q.average_volume || q.volume || 1,
-        live:     true,
       };
     });
     broadcast('prices', priceCache);
@@ -789,23 +788,10 @@ async function checkFillsAndRisk() {
       store.update('openPositions', arr => arr.map(pos => {
         const q = quotes.find(x => x.symbol === pos.optionSymbol);
         if (!q || pos.orderStatus !== 'filled') return pos;
-        const bid  = q.bid  != null ? +parseFloat(q.bid).toFixed(2)  : null;
-        const ask  = q.ask  != null ? +parseFloat(q.ask).toFixed(2)  : null;
-        const mid  = bid != null && ask != null ? +((bid + ask) / 2).toFixed(2) : (q.last || pos.currValue);
-        const last = q.last ? +parseFloat(q.last).toFixed(2) : mid;
-        // use BID for exit decisions — this is what you actually get when selling
-        const exitValue = bid != null && bid > 0 ? bid : mid;
-        const peak = exitValue > (pos.peakValue || pos.costBasis) ? exitValue : (pos.peakValue || pos.costBasis);
-        return {
-          ...pos,
-          currValue:  exitValue,  // bid price — used for exit triggers
-          midValue:   mid,        // mid price — shown alongside bid in UI
-          bidValue:   bid,        // raw bid
-          askValue:   ask,        // raw ask
-          lastValue:  last,       // last trade price
-          peakValue:  peak,
-          dte:        q.days_to_expiration ?? pos.dte,
-        };
+        const mid  = q.bid != null && q.ask != null ? (q.bid + q.ask) / 2 : (q.last || pos.currValue);
+        const curr = +mid.toFixed(2);
+        const peak = curr > (pos.peakValue || pos.costBasis) ? curr : (pos.peakValue || pos.costBasis);
+        return { ...pos, currValue: curr, peakValue: peak, dte: q.days_to_expiration ?? pos.dte };
       }));
       broadcast('positions', store.get().openPositions);
       broadcast('metrics',   buildMetrics());
@@ -866,198 +852,6 @@ async function syncAccount() {
   return await fetchAccountForRisk();
 }
 
-// ── External position sync ───────────────────────────────────────────────────
-// Tradier is the source of truth. Reconciles bot positions with Tradier every 5 min.
-// When a position disappears from Tradier, fetches the real closing fill from order
-// history and records it as a proper closed trade with accurate P&L.
-async function syncExternalPositions() {
-  try {
-    const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/positions`, { headers: paperHeaders() });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); } catch(e) {
-      log(`Position sync parse error: ${text.slice(0,80)}`, 'err'); return;
-    }
-
-    const raw = data?.positions?.position;
-    const now = Date.now();
-
-    // keep only recent pending orders (< 10 min old)
-    const keepPending = store.get().openPositions.filter(p => {
-      if (p.orderStatus !== 'pending') return false;
-      return now - (p.openedAtMs || now) < 10 * 60 * 1000;
-    });
-
-    // no positions in Tradier
-    if (!raw) {
-      const filled = store.get().openPositions.filter(p => p.orderStatus === 'filled');
-      if (filled.length) {
-        for (const p of filled) await recordClosedFromTradier(p);
-      }
-      store.set('openPositions', keepPending);
-      broadcast('positions', store.get().openPositions);
-      broadcast('metrics',   buildMetrics());
-      return;
-    }
-
-    const tradierPositions = (Array.isArray(raw) ? raw : [raw])
-      .filter(tp => /^[A-Z]+\d{6}[CP]\d{8}$/.test(tp.symbol || ''));
-    const tradierSyms = tradierPositions.map(tp => tp.symbol);
-
-    // detect positions that disappeared from Tradier — fetch real closing data
-    const disappeared = store.get().openPositions.filter(p =>
-      p.orderStatus === 'filled' && p.optionSymbol && !tradierSyms.includes(p.optionSymbol)
-    );
-    for (const p of disappeared) {
-      await recordClosedFromTradier(p);
-    }
-
-    // rebuild open positions from Tradier
-    store.set('openPositions', keepPending);
-
-    let changed = 0;
-    for (const tp of tradierPositions) {
-      const sym = tp.symbol;
-      const m   = sym.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
-      if (!m) continue;
-
-      const ticker    = m[1];
-      const direction = m[3] === 'C' ? 'call' : 'put';
-      const strike    = parseInt(m[4]) / 1000;
-      const expStr    = m[2];
-      const expiry    = `20${expStr.slice(0,2)}-${expStr.slice(2,4)}-${expStr.slice(4,6)}`;
-      const qty       = Math.abs(parseInt(tp.quantity || 1));
-      const totalCost = parseFloat(tp.cost_basis || 0);
-      const costBasis = qty > 0 ? +(totalCost / qty / 100).toFixed(2) : 0;
-
-      let currValue = costBasis, bid = null, ask = null, mid = costBasis;
-      try {
-        const qRes  = await fetch(`${PROD_BASE}/markets/quotes?symbols=${sym}`, { headers: prodHeaders() });
-        const qData = await qRes.json();
-        const q     = qData?.quotes?.quote;
-        if (q) {
-          bid = q.bid != null ? +parseFloat(q.bid).toFixed(2) : null;
-          ask = q.ask != null ? +parseFloat(q.ask).toFixed(2) : null;
-          mid = bid != null && ask != null ? +((bid + ask) / 2).toFixed(2) : (q.last ? +parseFloat(q.last).toFixed(2) : costBasis);
-          currValue = bid != null && bid > 0 ? bid : mid;
-        }
-      } catch(e) { /* keep costBasis */ }
-
-      const daysToExp = Math.max(0, Math.ceil((new Date(expiry) - getETTime()) / (1000 * 60 * 60 * 24)));
-
-      const pos = {
-        id:            Date.now() + changed,
-        sym:           ticker,
-        direction,
-        optionSymbol:  sym,
-        orderId:       null,
-        orderStatus:   'filled',
-        strike,
-        expiry,
-        dte:           daysToExp,
-        costBasis,
-        totalCostBasis: +totalCost.toFixed(2),
-        currValue,
-        midValue:      mid,
-        bidValue:      bid,
-        askValue:      ask,
-        peakValue:     currValue,
-        quantity:      qty,
-        partialClosed: false,
-        entryPrice:    priceCache[ticker]?.price || 0,
-        source:        'external',
-        openedAt:      etLocaleTime(),
-        openedAtMs:    Date.now(),
-        entrySnapshot: {},
-        limitPrice:    costBasis,
-      };
-      store.update('openPositions', arr => [...arr, pos]);
-      changed++;
-    }
-
-    broadcast('positions', store.get().openPositions);
-    broadcast('metrics',   buildMetrics());
-    const total = store.get().openPositions.filter(p => p.orderStatus === 'filled').length;
-    if (changed > 0) log(`Position sync — ${total} position(s) match Tradier`, 'scan');
-
-  } catch(e) {
-    log(`Position sync error: ${e.message}`, 'err');
-  }
-}
-
-// Fetch real closing fill from Tradier order history and record as closed trade
-async function recordClosedFromTradier(p) {
-  try {
-    // search recent orders for a sell_to_close on this option symbol
-    const res  = await fetch(`${PAPER_BASE}/accounts/${accountId()}/orders`, { headers: paperHeaders() });
-    const data = await res.json();
-    const raw  = data?.orders?.order;
-    if (!raw) return;
-
-    const orders = Array.isArray(raw) ? raw : [raw];
-    // find most recent filled sell_to_close for this option symbol
-    const closeOrder = orders
-      .filter(o =>
-        (o.option_symbol === p.optionSymbol || o.symbol === p.optionSymbol) &&
-        o.side === 'sell_to_close' &&
-        o.status === 'filled'
-      )
-      .sort((a, b) => new Date(b.transaction_date || b.create_date) - new Date(a.transaction_date || a.create_date))[0];
-
-    let fillPrice = p.currValue; // fallback to last known price
-    let closeReason = 'external';
-
-    if (closeOrder) {
-      fillPrice = +parseFloat(closeOrder.avg_fill_price || closeOrder.price || p.currValue).toFixed(2);
-      closeReason = 'manual/external';
-      log(`Real fill fetched for ${p.sym}: $${fillPrice} (order #${closeOrder.id})`, 'fill');
-    } else {
-      // check if expired worthless
-      const expDate = new Date(p.expiry);
-      if (expDate < getETTime()) {
-        fillPrice   = 0;
-        closeReason = 'expired worthless';
-        log(`${p.sym} expired worthless — recording $0 close`, 'fill');
-      } else {
-        log(`No close order found for ${p.sym} — using last known price $${fillPrice}`, 'scan');
-      }
-    }
-
-    const pnl    = +(fillPrice - p.costBasis).toFixed(2);
-    const pnlPct = p.costBasis ? +((pnl / p.costBasis) * 100).toFixed(1) : 0;
-    const closed = {
-      ...p,
-      closePrice:  fillPrice,
-      closeOrderId: closeOrder?.id || null,
-      pnl,
-      pnlPct,
-      win:         pnl > 0,
-      closedAt:    etLocaleTime(),
-      closeReason,
-    };
-
-    store.update('closedPositions', arr => [closed, ...arr]);
-    const cumPnl = store.get().closedPositions.reduce((s, t) => s + (t.pnl || 0), 0);
-    store.update('pnlHistory', arr => [...arr, {
-      label: '#' + store.get().closedPositions.length,
-      value: +cumPnl.toFixed(2),
-      win:   pnl > 0,
-    }]);
-
-    log(`${p.sym} ${p.direction.toUpperCase()} closed — P&L ${pnl>=0?'+':''}$${(pnl*100*(p.quantity||1)).toFixed(0)} (${pnl>=0?'+':''}${pnlPct}%) · ${closeReason}`, pnl>=0?'fill':'err');
-
-    // feed learning engine and ML
-    recordTradeForLearning({ ...closed, entrySnapshot: p.entrySnapshot || {} });
-
-    broadcast('closed',     store.get().closedPositions);
-    broadcast('pnlHistory', store.get().pnlHistory);
-    broadcast('metrics',    buildMetrics());
-
-  } catch(e) {
-    log(`recordClosedFromTradier error for ${p.sym}: ${e.message}`, 'err');
-  }
-}
-
 // ── Main scan loop ────────────────────────────────────────────────────────────
 let scanLock = false;
 
@@ -1113,7 +907,7 @@ function recordTradeForLearning(trade) {
     pnl: trade.pnl, pnlPct: trade.pnlPct, closeReason: trade.closeReason,
     snapshot: trade.entrySnapshot, closedAt: Date.now(),
     costBasis: trade.costBasis, closePrice: trade.closePrice, entryPrice: trade.entryPrice,
-  }, ...arr.slice(0, 1999)]);  // keep last 2000 trades
+  }, ...arr.slice(0, 199)]);
 
   const { tradeMemory } = store.get();
 
@@ -1134,8 +928,7 @@ function recordTradeForLearning(trade) {
 }
 
 function runLearningCycle() {
-  const { tradeMemory: tm, closedPositions, learnedThresholds } = store.get();
-  const tradeMemory = (tm?.length || 0) >= (closedPositions?.length || 0) ? tm : (closedPositions || tm || []);
+  const { tradeMemory, learnedThresholds } = store.get();
   if (tradeMemory.length < 5) return;
 
   const thresh = { ...learnedThresholds };
@@ -1206,7 +999,6 @@ function start() {
   fillInterval    = setInterval(checkFillsAndRisk, 30000);
   priceInterval   = setInterval(async () => { await fetchPrices(); generateSignals(); }, 10000);
   accountInterval = setInterval(syncAccount,   60000);
-  setInterval(syncExternalPositions, 5 * 60 * 1000); // sync every 5 min
   log(`Bot started — scanning ${store.get().watchlist.length} tickers every ${store.getSetting('scanInterval') || 60}s`, 'order');
   broadcast('status', { autoEnabled: true, marketOpen: isMarketOpen() });
   // run immediately
@@ -1249,7 +1041,6 @@ function init() {
   fetchPrices().then(async () => {
     await prefetchRSI(store.get().watchlist);
     generateSignals();
-    syncExternalPositions(); // reconcile with Tradier on startup
   });
   syncAccount();
   if (store.get().autoEnabled) {
@@ -1261,10 +1052,7 @@ function init() {
 
 module.exports = {
   init, start, stop, getStatus, emitter, buildMetrics,
-  enterTrade, exitTrade, syncAccount, syncExternalPositions, runScan, runLearningCycle,
+  enterTrade, exitTrade, syncAccount, runScan, runLearningCycle,
   signals, priceCache, cooldownMap, liveAccountCache,
   checkMLService, ML_SERVICE_URL: () => ML_SERVICE_URL,
 };
-
-
-
